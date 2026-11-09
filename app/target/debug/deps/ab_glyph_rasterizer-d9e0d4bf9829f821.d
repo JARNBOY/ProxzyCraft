@@ -1,9 +1,0 @@
-/Users/paponsuapmongkonchai/MoneyWarProject/ProxzyCraft/app/target/debug/deps/ab_glyph_rasterizer-d9e0d4bf9829f821.d: /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ab_glyph_rasterizer-0.1.10/src/lib.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ab_glyph_rasterizer-0.1.10/src/geometry.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ab_glyph_rasterizer-0.1.10/src/raster.rs
-
-/Users/paponsuapmongkonchai/MoneyWarProject/ProxzyCraft/app/target/debug/deps/libab_glyph_rasterizer-d9e0d4bf9829f821.rlib: /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ab_glyph_rasterizer-0.1.10/src/lib.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ab_glyph_rasterizer-0.1.10/src/geometry.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ab_glyph_rasterizer-0.1.10/src/raster.rs
-
-/Users/paponsuapmongkonchai/MoneyWarProject/ProxzyCraft/app/target/debug/deps/libab_glyph_rasterizer-d9e0d4bf9829f821.rmeta: /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ab_glyph_rasterizer-0.1.10/src/lib.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ab_glyph_rasterizer-0.1.10/src/geometry.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ab_glyph_rasterizer-0.1.10/src/raster.rs
-
-/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ab_glyph_rasterizer-0.1.10/src/lib.rs:
-/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ab_glyph_rasterizer-0.1.10/src/geometry.rs:
-/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ab_glyph_rasterizer-0.1.10/src/raster.rs:

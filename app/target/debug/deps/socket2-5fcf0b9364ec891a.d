@@ -1,9 +1,0 @@
-/Users/paponsuapmongkonchai/MoneyWarProject/ProxzyCraft/app/target/debug/deps/socket2-5fcf0b9364ec891a.d: /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/src/lib.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/src/sockaddr.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/src/socket.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/src/sockref.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/src/sys/unix.rs
-
-/Users/paponsuapmongkonchai/MoneyWarProject/ProxzyCraft/app/target/debug/deps/libsocket2-5fcf0b9364ec891a.rmeta: /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/src/lib.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/src/sockaddr.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/src/socket.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/src/sockref.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/src/sys/unix.rs
-
-/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/src/lib.rs:
-/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/src/sockaddr.rs:
-/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/src/socket.rs:
-/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/src/sockref.rs:
-/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/src/sys/unix.rs:

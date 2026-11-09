@@ -1,8 +1,0 @@
-/Users/paponsuapmongkonchai/MoneyWarProject/ProxzyCraft/app/target/debug/deps/owned_ttf_parser-3b86f4873cdad668.d: /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/owned_ttf_parser-0.25.1/src/lib.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/owned_ttf_parser-0.25.1/src/convert.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/owned_ttf_parser-0.25.1/src/owned.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/owned_ttf_parser-0.25.1/src/preparse.rs
-
-/Users/paponsuapmongkonchai/MoneyWarProject/ProxzyCraft/app/target/debug/deps/libowned_ttf_parser-3b86f4873cdad668.rmeta: /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/owned_ttf_parser-0.25.1/src/lib.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/owned_ttf_parser-0.25.1/src/convert.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/owned_ttf_parser-0.25.1/src/owned.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/owned_ttf_parser-0.25.1/src/preparse.rs
-
-/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/owned_ttf_parser-0.25.1/src/lib.rs:
-/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/owned_ttf_parser-0.25.1/src/convert.rs:
-/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/owned_ttf_parser-0.25.1/src/owned.rs:
-/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/owned_ttf_parser-0.25.1/src/preparse.rs:
