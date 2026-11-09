@@ -1,0 +1,10 @@
+/Users/paponsuapmongkonchai/MoneyWarProject/ProxzyCraft/app/target/debug/deps/autocfg-29cf8fae955b9401.d: /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/lib.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/error.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/rustc.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/version.rs
+
+/Users/paponsuapmongkonchai/MoneyWarProject/ProxzyCraft/app/target/debug/deps/libautocfg-29cf8fae955b9401.rlib: /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/lib.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/error.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/rustc.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/version.rs
+
+/Users/paponsuapmongkonchai/MoneyWarProject/ProxzyCraft/app/target/debug/deps/libautocfg-29cf8fae955b9401.rmeta: /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/lib.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/error.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/rustc.rs /Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/version.rs
+
+/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/lib.rs:
+/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/error.rs:
+/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/rustc.rs:
+/Users/paponsuapmongkonchai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/version.rs:

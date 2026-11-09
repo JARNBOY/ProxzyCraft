@@ -1,0 +1,14 @@
+{
+  "id": "unk_6bbbab18ae2199ff",
+  "revision": 1,
+  "question": "How should device detection and the certificate prompt look and behave in the original?",
+  "severity": "medium",
+  "domain": "behaviour",
+  "status": "open",
+  "probes": [
+    "A capture of Proxyman's device list and certificate install prompt",
+    "The person's own description of the expected order"
+  ],
+  "evidence_for": [],
+  "evidence_against": []
+}

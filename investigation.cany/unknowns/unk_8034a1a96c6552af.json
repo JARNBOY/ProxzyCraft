@@ -1,0 +1,15 @@
+{
+  "id": "unk_8034a1a96c6552af",
+  "revision": 2,
+  "question": "What exactly do the three attached pictures show in the areas the person finds hard (Map Local, Breakpoint, wildcard)?",
+  "severity": "medium",
+  "domain": "general",
+  "status": "investigating",
+  "probes": [
+    "Read the three attachments with image vision",
+    "OCR the text and note the controls and their order"
+  ],
+  "evidence_for": [],
+  "evidence_against": [],
+  "resolution": "OCR of the attachments shows: picture 2 is the Map Local rule table; picture 3 is the Map Local editor with wildcard, subpaths, GraphQL query name and delay controls; picture 1 is the main traffic window. The build now follows that table-plus-editor pattern. Exact pixel colours and spacing still cannot be checked without vision, so this is not fully resolved."
+}

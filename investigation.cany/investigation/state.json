@@ -1,0 +1,47 @@
+{
+  "revision": 17,
+  "brief": {
+    "question": "Rebuild a Proxyman-style network debugging desktop app (traffic list, inspector, cURL/share, repeat, Map Local, Breakpoints, log dashboard) as a Rust + egui POC from the person's description, with no access to the original.",
+    "purpose": "Learning POC for the person: see how capture, mocking, breakpoint editing and logging fit together.",
+    "targets": [
+      "/Applications/Proxyman.app"
+    ],
+    "constraints": [
+      "Clean room: never open, list, read, run or decompile the target",
+      "Build only inside app/",
+      "Rust + eframe/egui per instructions"
+    ],
+    "done_when": "cargo build succeeds, --screenshot produces a non-blank window PNG, and all requested feature areas are present and usable."
+  },
+  "plan": [
+    {
+      "title": "Keep your chosen request in place while live traffic keeps arriving",
+      "status": "doing",
+      "why": "The person wants a selected call to stay selected instead of jumping to every new response."
+    },
+    {
+      "title": "Add JSON, Raw, XML and HTML choices for the response body",
+      "status": "todo",
+      "why": "The person wants a Postman-style response view, with JSON as the default."
+    },
+    {
+      "title": "Build the app and fix any errors",
+      "status": "todo",
+      "why": "A working build is needed before checking the screens."
+    },
+    {
+      "title": "Take pictures of the pinned selection and the response views",
+      "status": "todo",
+      "why": "Confirm the new controls are visible and the layout still reads clearly."
+    },
+    {
+      "title": "Run the final comparison check and write the summary",
+      "status": "todo",
+      "why": "Make sure the program starts, draws and passes the same checks."
+    }
+  ],
+  "hypotheses": [],
+  "findings": [],
+  "handoff": "FINAL: Proxzy POC builds (cargo build), 11 tests pass, and rebuild_check reports build passed plus app-screenshot passed (2880x1662), 'This would pass.' The app now detects booted iOS simulators and Android emulators/phones before any certificate action: app/src/devices.rs scans xcrun simctl and adb on a worker thread, and Live Capture shows a Detected devices card with READY/NOT BOOTED pills and a per-device Connect… button. Clicking opens a confirmation modal (Connect and trust / Certificate only / Cancel); iOS uses the clicked UDID with xcrun simctl keychain <UDID> add-root-cert, restarts that simulator and sets the Mac web proxy, while Android uses the clicked adb serial for 10.0.2.2 or the LAN IP and pushes the CA to /sdcard/Download. The Guide has a new 'Connect real traffic from a simulator or emulator' section with two step-by-step columns, manual commands and troubleshooting. PROXZY_DEMO=connect opens the modal for screenshots. Fresh shots: shots/device-live.png, shots/device-guide.png, shots/device-modal.png. Traps: views.rs and rules_ui.rs are textually included into app.rs, so never add mod declarations; never touch /Applications/Proxyman.app; only build inside app/; never start dev servers or watchers. Next move: none required.",
+  "updated": "2026-11-09T10:49:00Z"
+}

@@ -1,0 +1,104 @@
+{
+  "version": 2,
+  "name": "Proxyman",
+  "request": "In This App about proxzy network check request in out like gate proxzy can see like Postman copy and share url, cURL and can optimize for repeate or mock Map local like inject test in endpoint request every type GraphQL , Rest API \n\nSO If I create feature MapLocal and BreakPoint feature And Log dashboard like Proxyman I need learn more about for POC in software craft to build",
+  "target": {
+    "kind": "local",
+    "path": "/Applications/Proxyman.app"
+  },
+  "stack": "Rust + egui (eframe)",
+  "status": "needs_you",
+  "note": "OpenCode stopped: the service returned no error details",
+  "created_ms": 1794210119144,
+  "updated_ms": 1794222177794,
+  "checks": [
+    {
+      "round": 1,
+      "check": "build",
+      "passed": true,
+      "similarity": null,
+      "note": "Build succeeded.",
+      "artifacts": [],
+      "at_ms": 1794211645743
+    },
+    {
+      "round": 1,
+      "check": "app-screenshot",
+      "passed": true,
+      "similarity": null,
+      "note": "The program starts and draws (2880×1664).",
+      "artifacts": [
+        "checks/round-1/screenshot.png"
+      ],
+      "at_ms": 1794211647782
+    },
+    {
+      "round": 2,
+      "check": "build",
+      "passed": true,
+      "similarity": null,
+      "note": "Build succeeded.",
+      "artifacts": [],
+      "at_ms": 1794212721122
+    },
+    {
+      "round": 2,
+      "check": "app-screenshot",
+      "passed": true,
+      "similarity": null,
+      "note": "The program starts and draws (2880×1666).",
+      "artifacts": [
+        "checks/round-2/screenshot.png"
+      ],
+      "at_ms": 1794212724729
+    },
+    {
+      "round": 3,
+      "check": "build",
+      "passed": true,
+      "similarity": null,
+      "note": "Build succeeded.",
+      "artifacts": [],
+      "at_ms": 1794217557966
+    },
+    {
+      "round": 3,
+      "check": "app-screenshot",
+      "passed": true,
+      "similarity": null,
+      "note": "The program starts and draws (2880×1662).",
+      "artifacts": [
+        "checks/round-3/screenshot.png"
+      ],
+      "at_ms": 1794217560347
+    },
+    {
+      "round": 4,
+      "check": "build",
+      "passed": true,
+      "similarity": null,
+      "note": "Build succeeded.",
+      "artifacts": [],
+      "at_ms": 1794219180370
+    },
+    {
+      "round": 4,
+      "check": "app-screenshot",
+      "passed": true,
+      "similarity": null,
+      "note": "The program starts and draws (2880×1662).",
+      "artifacts": [
+        "checks/round-4/screenshot.png"
+      ],
+      "at_ms": 1794219183204
+    }
+  ],
+  "agent_session": null,
+  "agent_session_by": "opencode",
+  "allowed_actions": [],
+  "last_reply": "Proxzy now lists every booted iOS Simulator and running Android emulator or phone on the Live Capture screen before it offers any certificate action. Each detected device shows a clear READY state and a Connect button, and clicking it opens a confirmation dialog where you choose whether to install the certificate only or also set the proxy and restart the device. The iOS path targets the exact simulator you clicked, while the Android path targets that emulator or phone's serial, uses the correct host address, and copies the certificate to its Download folder. The Guide gained a step-by-step \"Connect real traffic from a simulator or emulator\" section with manual commands and troubleshooting for common failures. The project builds cleanly, all eleven tests pass, and the final rebuild check reports that it would pass.",
+  "asset_budget_usd": 5.0,
+  "generate_assets": false,
+  "builder": "OpenCode",
+  "questions": "ask"
+}
