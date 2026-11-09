@@ -81,6 +81,8 @@ pub struct ProxyConfig {
     pub map_rules: Vec<MapRule>,
     pub catch_enabled: bool,
     pub breakpoints: Vec<BreakpointRule>,
+    pub ssl_proxying_enabled: bool,
+    pub ssl_allowlist: Vec<String>,
 }
 
 impl Default for ProxyConfig {
@@ -91,7 +93,23 @@ impl Default for ProxyConfig {
             map_rules: Vec::new(),
             catch_enabled: false,
             breakpoints: Vec::new(),
+            ssl_proxying_enabled: true,
+            ssl_allowlist: Vec::new(),
         }
+    }
+}
+
+impl ProxyConfig {
+    pub fn should_intercept(&self, host: &str) -> bool {
+        if !self.ssl_proxying_enabled {
+            return false;
+        }
+        if self.ssl_allowlist.is_empty() {
+            return false; // Safe default: blind tunnel everything unless explicitly whitelisted
+        }
+        self.ssl_allowlist
+            .iter()
+            .any(|pat| crate::model::domain_matches(pat, host))
     }
 }
 
@@ -466,6 +484,16 @@ async fn handle_connection(
 
     if method.eq_ignore_ascii_case("CONNECT") {
         let (host, port) = split_host_port(&target, 443);
+        let intercept = ctx
+            .config
+            .read()
+            .map(|c| c.should_intercept(&host))
+            .unwrap_or(false);
+
+        if !intercept {
+            return passthrough_tunnel(stream, &host, port, ctx).await;
+        }
+
         stream
             .write_all(b"HTTP/1.1 200 Connection Established\r\nProxy-Agent: Proxzy\r\n\r\n")
             .await
@@ -507,6 +535,32 @@ async fn handle_connection(
         )
         .await
     }
+}
+
+async fn passthrough_tunnel(
+    mut client: TcpStream,
+    host: &str,
+    port: u16,
+    ctx: ConnCtx,
+) -> Result<(), String> {
+    let addr = format!("{}:{}", host, port);
+    let mut upstream = tokio::time::timeout(Duration::from_secs(15), TcpStream::connect(&addr))
+        .await
+        .map_err(|_| format!("Connect to {} timed out", addr))?
+        .map_err(|e| format!("Connect to {}: {}", addr, e))?;
+
+    client
+        .write_all(b"HTTP/1.1 200 Connection Established\r\nProxy-Agent: Proxzy\r\n\r\n")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let _ = ctx.tx.send(ProxyEvent::Log {
+        level: "Info".into(),
+        message: format!("Passthrough tunnel: {}:{} (TLS bypassed)", host, port),
+    });
+
+    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

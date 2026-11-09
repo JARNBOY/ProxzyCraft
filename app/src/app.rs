@@ -196,6 +196,8 @@ pub struct App {
     recording: bool,
     map_rules: Vec<MapRule>,
     breakpoints: Vec<BreakpointRule>,
+    ssl_proxying_enabled: bool,
+    ssl_allowlist: Vec<String>,
     logs: Vec<LogEntry>,
     composer_method: String,
     composer_url: String,
@@ -288,6 +290,8 @@ impl App {
             recording: true,
             map_rules: sample_map_rules(),
             breakpoints: sample_breakpoints(),
+            ssl_proxying_enabled: true,
+            ssl_allowlist: Vec::new(),
             logs: sample_logs(),
             composer_method: method,
             composer_url: url,
@@ -386,6 +390,8 @@ impl App {
                 map_rules: self.map_rules.clone(),
                 catch_enabled: self.catch_enabled,
                 breakpoints: self.breakpoints.clone(),
+                ssl_proxying_enabled: self.ssl_proxying_enabled,
+                ssl_allowlist: self.ssl_allowlist.clone(),
             });
         }
     }

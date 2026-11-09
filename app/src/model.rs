@@ -230,6 +230,25 @@ pub fn pattern_matches_url(pattern: &str, url: &str) -> bool {
         || wildcard_match(pattern, path)
 }
 
+/// Matches hostnames for Selective SSL Proxying.
+/// Supports exact match (`api.example.com`), wildcard subdomains (`*.example.com`),
+/// port stripping, and wildcard catch-all (`*`).
+pub fn domain_matches(pattern: &str, target_host: &str) -> bool {
+    let p = pattern.trim().to_lowercase();
+    let h = target_host.trim().to_lowercase();
+    let h = h.split(':').next().unwrap_or(&h);
+    if p.is_empty() {
+        return false;
+    }
+    if p == "*" || p == "*.*" {
+        return true;
+    }
+    if let Some(suffix) = p.strip_prefix("*.") {
+        return h == suffix || h.ends_with(&format!(".{}", suffix));
+    }
+    h == p
+}
+
 pub fn pattern_matches_graphql(pattern: &str, body: &str) -> bool {
     let name = pattern.trim();
     if name.is_empty() {
@@ -1517,6 +1536,23 @@ mod rule_tests {
     #[test]
     fn question_mark_stays_literal_for_queries() {
         assert!(!pattern_matches_url("/v1/product?", "https://api.shopwave.dev/v1/products?x=1"));
+    }
+
+    #[test]
+    fn test_domain_matches_wildcard_and_exact() {
+        assert!(domain_matches("*.example.com", "api.example.com"));
+        assert!(domain_matches("*.example.com", "v2.api.example.com"));
+        assert!(domain_matches("*.example.com", "example.com"));
+        assert!(domain_matches("*.example.com", "api.example.com:443"));
+        assert!(!domain_matches("*.example.com", "notexample.com"));
+        assert!(!domain_matches("*.example.com", "example.org"));
+
+        assert!(domain_matches("api.github.com", "api.github.com"));
+        assert!(domain_matches("api.github.com", "api.github.com:443"));
+        assert!(!domain_matches("api.github.com", "github.com"));
+
+        assert!(domain_matches("*", "google.com"));
+        assert!(!domain_matches("", "google.com"));
     }
 
     #[test]
