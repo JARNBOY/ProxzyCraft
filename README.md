@@ -89,6 +89,58 @@ When running automated UI tests with tools like **`mobile-mcp`** or **MobileWrig
 
 ---
 
+## How to Use: Mock &amp; Testful UI Test Workflow (`127.0.0.1:9090`)
+
+### 1. Direct URL or Domain Rule Hook (No cURL Required)
+When configuring a Mobile UI Test (`127.0.0.1:9090`) and you **do not have a cURL command**, open **Map Local** and use the top **DIRECT URL / cURL HOOK** bar:
+1. Choose the HTTP method (`ANY`, `GET`, `POST`, `PUT`, `DELETE`).
+2. Enter a **direct URL** (e.g., `https://api.mycorp.com/v1/orders*`) or a **domain/path wildcard** (`*/v1/checkout*`).
+3. Pick the initial scenario pill: **`Success`** (`200`), **`Error`** (`500`), or **`Empty`** (`200`).
+4. Edit the inline `Return JSON` payload (or keep the preset template) and click **`+ Hook Mock`**.
+5. **Automatic Device Test Sync:** ProxzyCraft automatically enables the Map Local engine, extracts the hostname (`api.mycorp.com`), and registers it in the **SSL Proxying Allowlist** so HTTPS requests from iOS Simulator or Android Emulator are intercepted and answered immediately.
+
+### 2. Paste cURL Import &amp; Live Upstream-to-Mock Recording (Postman + Proxyman Flow)
+1. Open **Composer** (or the **New Mapping** modal in **Map Local**).
+2. Paste any `curl -X POST 'https://...' -H '...' -d '{...}'` command into the **PASTE cURL / DIRECT URL** bar.
+3. Click **`Import & Send`** to call the real upstream Production/Staging API and inspect the live status, headers, and JSON body.
+4. Click **`Save Response as Mock`** in the Response panel to turn that real upstream response into the **`Success (200)`** scenario of a new Map Local rule in 1 click.
+
+### 3. Multi-Scenario Variants (`Success` / `Error` / `Empty`) &amp; Fixture Path Convention
+Every Map Local rule stores three independent scenario payloads in memory so you can switch states in **1 click** without re-typing JSON:
+* **`Success (200)`** &mdash; Happy-path payload (or recorded upstream response).
+* **`Error (500/503)`** &mdash; Server failure payload to test mobile error banners and retry buttons.
+* **`Empty (200)`** &mdash; Empty collection payload (`{"items":[],"data":[],"total":0}`) to test empty-state screens.
+
+Each rule displays and copies its canonical, scalable fixture path convention:
+```text
+mocks/<domain>/<method>_<path_slug>/<scenario>.json
+# Example:
+mocks/api.shopwave.dev/get_v1_orders/success.json
+mocks/api.shopwave.dev/get_v1_orders/error.json
+mocks/api.shopwave.dev/get_v1_orders/empty.json
+```
+
+### 4. WireMock / Testful HTTP Control Hook API (`/__proxzy/*`)
+External test runners (**MobileWright**, **`mobile-mcp`**, **XCTest**, **Espresso**, or shell scripts) can control and verify ProxzyCraft directly over the same proxy port (`127.0.0.1:9090`) with zero extra daemon configuration:
+
+```bash
+# 1. Verify proxy sync, active SSL allowlist, and rule hit counts
+curl -s http://127.0.0.1:9090/__proxzy/health
+
+# 2. Dynamically inject or update a mock rule (auto-whitelists HTTPS domain!)
+curl -s -X POST http://127.0.0.1:9090/__proxzy/mock \
+  -d '{"pattern":"https://api.shopwave.dev/v1/orders*","method":"GET","scenario":"success","status":200,"body":"{\"orders\":[{\"id\":\"ord_1\"}]}"}'
+
+# 3. Switch an endpoint between "success", "error", "empty", or "passthrough" (real upstream)
+curl -s -X POST http://127.0.0.1:9090/__proxzy/scenario \
+  -d '{"pattern":"https://api.shopwave.dev/v1/orders*","scenario":"error"}'
+
+# 4. Reset all mock hit counters before the next test case
+curl -s -X POST http://127.0.0.1:9090/__proxzy/reset
+```
+
+---
+
 ## Selective SSL Proxying (Browser Protection)
 
 Traditional MITM proxies terminate TLS on every single connection, causing host browsers (Chrome, Safari, macOS services) to break with `NET::ERR_CERT_AUTHORITY_INVALID`.

@@ -41,7 +41,60 @@ impl App {
         if let Some(g) = preset {
             self.set_composer_preset(g);
         }
-        ui.add_space(12.0);
+        ui.add_space(8.0);
+
+        let mut do_import_curl = false;
+        let mut do_import_and_send = false;
+        let mut do_save_mock = false;
+        Frame::none()
+            .fill(PANEL)
+            .stroke(Stroke::new(1.0, BORDER))
+            .rounding(9.0)
+            .inner_margin(Margin::symmetric(12.0, 8.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    pill(
+                        ui,
+                        "PASTE cURL / DIRECT URL",
+                        CYAN,
+                        Color32::from_rgba_unmultiplied(88, 196, 255, 18),
+                    );
+                    let w = (ui.available_width() - 295.0).max(160.0);
+                    input_frame().show(ui, |ui| {
+                        ui.set_width(w);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.composer_curl_input)
+                                .frame(false)
+                                .desired_width(w)
+                                .font(TextStyle::Monospace)
+                                .text_color(TEXT)
+                                .hint_text(
+                                    "Paste curl -X POST 'https://api.example.com/v1/orders' -H ... -d '{...}' or direct URL",
+                                ),
+                        );
+                    });
+                    if secondary_button(ui, "Import cURL").clicked() {
+                        do_import_curl = true;
+                    }
+                    if primary_button(ui, "Import & Send").clicked() {
+                        do_import_and_send = true;
+                    }
+                    if secondary_button(ui, "Save as Mock").clicked() {
+                        do_save_mock = true;
+                    }
+                });
+            });
+        if do_import_curl {
+            self.import_curl_to_composer(ctx);
+        }
+        if do_import_and_send {
+            self.import_curl_to_composer(ctx);
+            self.send_composer(ctx);
+        }
+        if do_save_mock {
+            self.save_composer_as_mock(ctx);
+        }
+        ui.add_space(10.0);
 
         let mut do_send = false;
         let mut do_copy_curl = false;
@@ -261,6 +314,7 @@ impl App {
     fn composer_result(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         let mut copy_body = false;
         let mut inspect = false;
+        let mut save_resp_mock = false;
         card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -408,6 +462,9 @@ impl App {
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
+                    if primary_button(ui, "Save Response as Mock").clicked() {
+                        save_resp_mock = true;
+                    }
                     if secondary_button(ui, "Copy body").clicked() {
                         copy_body = true;
                     }
@@ -442,6 +499,9 @@ impl App {
                     .color(FAINT),
             );
         });
+        if save_resp_mock {
+            self.save_composer_as_mock(ctx);
+        }
         if copy_body {
             if let Some(resp) = &self.composer_response {
                 self.copy(ctx, resp.body.clone(), "Response body copied");
@@ -826,6 +886,7 @@ impl App {
                                             graphql_name: String::new(),
                                             enabled: true,
                                             hits: 0,
+                                            ..MapRule::default()
                                         });
                                         self.log(
                                             Level::Info,

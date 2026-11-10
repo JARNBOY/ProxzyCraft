@@ -1319,6 +1319,330 @@ impl RuleMethod {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MockScenario {
+    Success,
+    Error,
+    Empty,
+}
+
+impl MockScenario {
+    pub fn label(self) -> &'static str {
+        match self {
+            MockScenario::Success => "Success",
+            MockScenario::Error => "Error",
+            MockScenario::Empty => "Empty",
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            MockScenario::Success => "success",
+            MockScenario::Error => "error",
+            MockScenario::Empty => "empty",
+        }
+    }
+
+    pub fn from_slug(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "success" | "ok" | "200" => Some(MockScenario::Success),
+            "error" | "err" | "fail" | "500" | "503" => Some(MockScenario::Error),
+            "empty" | "none" | "blank" => Some(MockScenario::Empty),
+            _ => None,
+        }
+    }
+
+    pub fn default_status(self) -> u16 {
+        match self {
+            MockScenario::Success => 200,
+            MockScenario::Error => 500,
+            MockScenario::Empty => 200,
+        }
+    }
+
+    pub fn default_body(self) -> String {
+        match self {
+            MockScenario::Success => r#"{
+  "ok": true,
+  "data": {
+    "id": "mock_1",
+    "status": "ready"
+  },
+  "source": "proxzy-mock"
+}"#
+            .into(),
+            MockScenario::Error => r#"{
+  "error": "internal_server_error",
+  "message": "Simulated error state from ProxzyCraft UI test mock",
+  "code": "MOCK_ERROR_500"
+}"#
+            .into(),
+            MockScenario::Empty => r#"{
+  "items": [],
+  "data": [],
+  "total": 0,
+  "source": "proxzy-mock-empty"
+}"#
+            .into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedCurl {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+}
+
+/// Tokenize a shell command (supporting single quotes, double quotes, and backslash line continuations).
+fn shell_tokens(input: &str) -> Vec<String> {
+    let normalized = input.replace("\\\r\n", " ").replace("\\\n", " ");
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = normalized.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if in_single {
+            if c == '\'' {
+                in_single = false;
+            } else {
+                current.push(c);
+            }
+        } else if in_double {
+            if c == '"' {
+                in_double = false;
+            } else if c == '\\' {
+                if let Some(&next) = chars.peek() {
+                    if next == '"' || next == '\\' || next == '$' || next == '`' {
+                        current.push(chars.next().unwrap());
+                    } else if next == 'n' {
+                        let _ = chars.next();
+                        current.push('\n');
+                    } else {
+                        current.push(c);
+                    }
+                }
+            } else {
+                current.push(c);
+            }
+        } else {
+            match c {
+                '\'' => in_single = true,
+                '"' => in_double = true,
+                '\\' => {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    }
+                }
+                c if c.is_whitespace() => {
+                    if !current.is_empty() {
+                        tokens.push(std::mem::take(&mut current));
+                    }
+                }
+                _ => current.push(c),
+            }
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+/// Parse a pasted `curl` command (or direct URL) into method, URL, headers, and body.
+pub fn parse_curl(input: &str) -> Option<ParsedCurl> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Also accept a plain direct URL if someone pastes https://... into the cURL box
+    if (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
+        && !trimmed.contains(char::is_whitespace)
+    {
+        return Some(ParsedCurl {
+            method: "GET".into(),
+            url: trimmed.to_string(),
+            headers: Vec::new(),
+            body: String::new(),
+        });
+    }
+
+    let tokens = shell_tokens(trimmed);
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let mut method: Option<String> = None;
+    let mut url: Option<String> = None;
+    let mut headers: Vec<(String, String)> = Vec::new();
+    let mut body_parts: Vec<String> = Vec::new();
+
+    let mut i = 0;
+    if tokens[0].eq_ignore_ascii_case("curl") {
+        i = 1;
+    }
+
+    while i < tokens.len() {
+        let tok = &tokens[i];
+        match tok.as_str() {
+            "-X" | "--request" => {
+                if i + 1 < tokens.len() {
+                    method = Some(tokens[i + 1].to_ascii_uppercase());
+                    i += 2;
+                    continue;
+                }
+            }
+            "-H" | "--header" => {
+                if i + 1 < tokens.len() {
+                    if let Some((k, v)) = tokens[i + 1].split_once(':') {
+                        let k = k.trim();
+                        if !k.is_empty() {
+                            headers.push((k.to_string(), v.trim().to_string()));
+                        }
+                    }
+                    i += 2;
+                    continue;
+                }
+            }
+            "-d" | "--data" | "--data-raw" | "--data-binary" | "--data-urlencode" | "--json" => {
+                if tok == "--json"
+                    && !headers
+                        .iter()
+                        .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                {
+                    headers.push(("content-type".into(), "application/json".into()));
+                }
+                if i + 1 < tokens.len() {
+                    body_parts.push(tokens[i + 1].clone());
+                    i += 2;
+                    continue;
+                }
+            }
+            "--url" => {
+                if i + 1 < tokens.len() {
+                    url = Some(tokens[i + 1].clone());
+                    i += 2;
+                    continue;
+                }
+            }
+            "-u" | "--user" | "-A" | "--user-agent" | "-x" | "--proxy" | "-o" | "--output"
+            | "-b" | "--cookie" | "-c" | "--cookie-jar" | "--cacert" | "--connect-timeout"
+            | "-m" | "--max-time" => {
+                i += 2;
+                continue;
+            }
+            _ => {
+                if let Some(m) = tok.strip_prefix("-X") {
+                    if !m.is_empty() {
+                        method = Some(m.to_ascii_uppercase());
+                        i += 1;
+                        continue;
+                    }
+                }
+                if tok.starts_with("http://") || tok.starts_with("https://") {
+                    url = Some(tok.clone());
+                } else if !tok.starts_with('-') && url.is_none() && tok.contains('.') {
+                    url = Some(format!("https://{}", tok));
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let url = url?;
+    let body = body_parts.join("&");
+    let final_method = method.unwrap_or_else(|| {
+        if !body.is_empty() {
+            "POST".into()
+        } else {
+            "GET".into()
+        }
+    });
+
+    Some(ParsedCurl {
+        method: final_method,
+        url,
+        headers,
+        body,
+    })
+}
+
+/// Extract a clean hostname (or wildcard domain) from a URL or rule pattern so
+/// adding a mock rule can automatically register the host in `ssl_allowlist`.
+pub fn extract_domain_from_pattern(pattern: &str) -> Option<String> {
+    let trimmed = pattern.trim();
+    if trimmed.is_empty() || trimmed.starts_with('/') {
+        return None;
+    }
+    let without_scheme = if let Some((_, rest)) = trimmed.split_once("://") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix('*') {
+        if rest.starts_with('/') {
+            return None;
+        }
+        trimmed
+    } else {
+        trimmed
+    };
+    let host_port = without_scheme
+        .split(&['/', '?', '#'][..])
+        .next()
+        .unwrap_or("")
+        .trim();
+    if host_port.is_empty() || !host_port.contains('.') {
+        return None;
+    }
+    // Strip trailing wildcard unless it's a leading `*.domain.com`
+    let cleaned = host_port.trim_end_matches('*');
+    if cleaned.is_empty() || !cleaned.contains('.') {
+        return None;
+    }
+    Some(cleaned.to_ascii_lowercase())
+}
+
+/// Canonical readable & scalable file convention for a mock rule scenario:
+/// `mocks/<domain>/<method>_<path_slug>/<scenario>.json`
+pub fn mock_fixture_path(method: RuleMethod, pattern: &str, scenario: MockScenario) -> String {
+    let domain = extract_domain_from_pattern(pattern)
+        .unwrap_or_else(|| "local.app".to_string())
+        .replace("*.", "wildcard.")
+        .replace(':', "_");
+    let raw_path = if let Some((_, rest)) = pattern.split_once("://") {
+        rest.find('/').map(|idx| &rest[idx..]).unwrap_or("/root")
+    } else if let Some(idx) = pattern.find('/') {
+        &pattern[idx..]
+    } else {
+        pattern
+    };
+    let base_path = raw_path.split('?').next().unwrap_or(raw_path);
+    let mut slug: String = base_path
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    while slug.contains("__") {
+        slug = slug.replace("__", "_");
+    }
+    let slug = slug.trim_matches('_');
+    let slug = if slug.is_empty() { "root" } else { slug };
+    format!(
+        "mocks/{}/{}_{}/{}.json",
+        domain,
+        method.label().to_ascii_lowercase(),
+        slug,
+        scenario.slug()
+    )
+}
+
 #[derive(Clone)]
 pub struct MapRule {
     pub id: u64,
@@ -1332,6 +1656,39 @@ pub struct MapRule {
     pub graphql_name: String,
     pub enabled: bool,
     pub hits: u32,
+    pub active_scenario: MockScenario,
+    pub success_status: u16,
+    pub success_body: String,
+    pub error_status: u16,
+    pub error_body: String,
+    pub empty_status: u16,
+    pub empty_body: String,
+}
+
+impl Default for MapRule {
+    fn default() -> Self {
+        let success_body = MockScenario::Success.default_body();
+        Self {
+            id: 0,
+            name: String::new(),
+            pattern: String::new(),
+            method: RuleMethod::Any,
+            status: 200,
+            content_type: "application/json".into(),
+            delay_ms: 20,
+            body: success_body.clone(),
+            graphql_name: String::new(),
+            enabled: true,
+            hits: 0,
+            active_scenario: MockScenario::Success,
+            success_status: 200,
+            success_body,
+            error_status: 500,
+            error_body: MockScenario::Error.default_body(),
+            empty_status: 200,
+            empty_body: MockScenario::Empty.default_body(),
+        }
+    }
 }
 
 impl MapRule {
@@ -1341,9 +1698,55 @@ impl MapRule {
             && pattern_matches_url(&self.pattern, url)
             && pattern_matches_graphql(&self.graphql_name, body)
     }
+
+    /// Save the currently active `status` and `body` back into its scenario slot,
+    /// then activate `target` and load its `status` and `body`.
+    pub fn switch_scenario(&mut self, target: MockScenario) {
+        match self.active_scenario {
+            MockScenario::Success => {
+                self.success_status = self.status;
+                self.success_body = self.body.clone();
+            }
+            MockScenario::Error => {
+                self.error_status = self.status;
+                self.error_body = self.body.clone();
+            }
+            MockScenario::Empty => {
+                self.empty_status = self.status;
+                self.empty_body = self.body.clone();
+            }
+        }
+        self.active_scenario = target;
+        match target {
+            MockScenario::Success => {
+                self.status = self.success_status;
+                self.body = self.success_body.clone();
+            }
+            MockScenario::Error => {
+                self.status = self.error_status;
+                self.body = self.error_body.clone();
+            }
+            MockScenario::Empty => {
+                self.status = self.empty_status;
+                self.body = self.empty_body.clone();
+            }
+        }
+    }
+
+    pub fn fixture_path(&self) -> String {
+        mock_fixture_path(self.method, &self.pattern, self.active_scenario)
+    }
 }
 
 pub fn sample_map_rules() -> Vec<MapRule> {
+    let prod_body = sample_captures()[0].resp_body.clone();
+    let rec_body = sample_captures()[5].resp_body.clone();
+    let maint_body = r#"{
+  "error": "service_unavailable",
+  "message": "Checkout is in maintenance mode.",
+  "code": "CHECKOUT_MAINTENANCE"
+}"#
+    .to_string();
     vec![
         MapRule {
             id: 1,
@@ -1353,10 +1756,14 @@ pub fn sample_map_rules() -> Vec<MapRule> {
             status: 200,
             content_type: "application/json".into(),
             delay_ms: 18,
-            body: sample_captures()[0].resp_body.clone(),
+            body: prod_body.clone(),
             graphql_name: "GetProducts".into(),
             enabled: true,
             hits: 12,
+            active_scenario: MockScenario::Success,
+            success_status: 200,
+            success_body: prod_body,
+            ..MapRule::default()
         },
         MapRule {
             id: 2,
@@ -1366,15 +1773,14 @@ pub fn sample_map_rules() -> Vec<MapRule> {
             status: 503,
             content_type: "application/json".into(),
             delay_ms: 120,
-            body: r#"{
-  "error": "service_unavailable",
-  "message": "Checkout is in maintenance mode.",
-  "code": "CHECKOUT_MAINTENANCE"
-}"#
-            .into(),
+            body: maint_body.clone(),
             graphql_name: String::new(),
             enabled: true,
             hits: 3,
+            active_scenario: MockScenario::Error,
+            error_status: 503,
+            error_body: maint_body,
+            ..MapRule::default()
         },
         MapRule {
             id: 3,
@@ -1384,10 +1790,14 @@ pub fn sample_map_rules() -> Vec<MapRule> {
             status: 200,
             content_type: "application/json".into(),
             delay_ms: 21,
-            body: sample_captures()[5].resp_body.clone(),
+            body: rec_body.clone(),
             graphql_name: String::new(),
             enabled: false,
             hits: 8,
+            active_scenario: MockScenario::Success,
+            success_status: 200,
+            success_body: rec_body,
+            ..MapRule::default()
         },
     ]
 }
@@ -1646,5 +2056,88 @@ mod rule_tests {
             xml,
             "<?xml version=\"1.0\"?>\n<root>\n  <item id=\"1\">\n    A\n  </item>\n</root>"
         );
+    }
+
+    #[test]
+    fn parse_curl_handles_post_headers_and_multiline_body() {
+        let cmd = r#"curl -X POST 'https://api.shopwave.dev/v1/checkout?currency=THB' \
+          -H 'Content-Type: application/json' \
+          -H 'Authorization: Bearer tok_123' \
+          --data-raw '{"cartId":"cart_99","items":[1,2]}'"#;
+        let parsed = parse_curl(cmd).expect("should parse curl");
+        assert_eq!(parsed.method, "POST");
+        assert_eq!(parsed.url, "https://api.shopwave.dev/v1/checkout?currency=THB");
+        assert_eq!(parsed.headers.len(), 2);
+        assert_eq!(
+            parsed.headers[0],
+            ("Content-Type".into(), "application/json".into())
+        );
+        assert_eq!(
+            parsed.headers[1],
+            ("Authorization".into(), "Bearer tok_123".into())
+        );
+        assert_eq!(parsed.body, r#"{"cartId":"cart_99","items":[1,2]}"#);
+    }
+
+    #[test]
+    fn parse_curl_infers_post_from_data_and_accepts_direct_url() {
+        let implicit_post = parse_curl(r#"curl https://api.example.com/v1/login -d '{"u":"a"}'"#)
+            .expect("should parse implicit POST");
+        assert_eq!(implicit_post.method, "POST");
+        assert_eq!(implicit_post.url, "https://api.example.com/v1/login");
+        assert_eq!(implicit_post.body, r#"{"u":"a"}"#);
+
+        let direct = parse_curl("https://api.example.com/v1/profile").expect("direct URL");
+        assert_eq!(direct.method, "GET");
+        assert_eq!(direct.url, "https://api.example.com/v1/profile");
+    }
+
+    #[test]
+    fn map_rule_switches_between_success_error_and_empty_preserving_payloads() {
+        let mut rule = MapRule {
+            name: "Orders API".into(),
+            pattern: "https://api.shopwave.dev/v1/orders*".into(),
+            method: RuleMethod::Get,
+            status: 200,
+            body: r#"{"orders":[{"id":"ord_1"}]}"#.into(),
+            success_status: 200,
+            success_body: r#"{"orders":[{"id":"ord_1"}]}"#.into(),
+            ..MapRule::default()
+        };
+
+        rule.switch_scenario(MockScenario::Error);
+        assert_eq!(rule.active_scenario, MockScenario::Error);
+        assert_eq!(rule.status, 500);
+        assert!(rule.body.contains("MOCK_ERROR_500"));
+
+        rule.switch_scenario(MockScenario::Empty);
+        assert_eq!(rule.active_scenario, MockScenario::Empty);
+        assert_eq!(rule.status, 200);
+        assert!(rule.body.contains("\"items\": []"));
+
+        rule.switch_scenario(MockScenario::Success);
+        assert_eq!(rule.active_scenario, MockScenario::Success);
+        assert_eq!(rule.status, 200);
+        assert_eq!(rule.body, r#"{"orders":[{"id":"ord_1"}]}"#);
+    }
+
+    #[test]
+    fn extracts_domain_and_builds_fixture_path_convention() {
+        assert_eq!(
+            extract_domain_from_pattern("https://api.shopwave.dev/v1/orders?*"),
+            Some("api.shopwave.dev".into())
+        );
+        assert_eq!(
+            extract_domain_from_pattern("*.shopwave.dev/v1/*"),
+            Some("*.shopwave.dev".into())
+        );
+        assert_eq!(extract_domain_from_pattern("/v1/orders"), None);
+
+        let path = mock_fixture_path(
+            RuleMethod::Get,
+            "https://api.shopwave.dev/v1/orders?*",
+            MockScenario::Success,
+        );
+        assert_eq!(path, "mocks/api.shopwave.dev/get_v1_orders/success.json");
     }
 }

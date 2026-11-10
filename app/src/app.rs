@@ -133,6 +133,79 @@ struct MapEditor {
     body: String,
     graphql_name: String,
     enabled: bool,
+    active_scenario: MockScenario,
+    success_status: String,
+    success_body: String,
+    error_status: String,
+    error_body: String,
+    empty_status: String,
+    empty_body: String,
+    curl_paste: String,
+}
+
+impl MapEditor {
+    fn sync_current_to_slot(&mut self) {
+        match self.active_scenario {
+            MockScenario::Success => {
+                self.success_status = self.status.clone();
+                self.success_body = self.body.clone();
+            }
+            MockScenario::Error => {
+                self.error_status = self.status.clone();
+                self.error_body = self.body.clone();
+            }
+            MockScenario::Empty => {
+                self.empty_status = self.status.clone();
+                self.empty_body = self.body.clone();
+            }
+        }
+    }
+
+    fn switch_scenario(&mut self, target: MockScenario) {
+        self.sync_current_to_slot();
+        self.active_scenario = target;
+        match target {
+            MockScenario::Success => {
+                self.status = self.success_status.clone();
+                self.body = self.success_body.clone();
+            }
+            MockScenario::Error => {
+                self.status = self.error_status.clone();
+                self.body = self.error_body.clone();
+            }
+            MockScenario::Empty => {
+                self.status = self.empty_status.clone();
+                self.body = self.empty_body.clone();
+            }
+        }
+    }
+
+    fn apply_curl(&mut self) -> bool {
+        let Some(parsed) = parse_curl(&self.curl_paste) else {
+            return false;
+        };
+        self.method = rule_method_for(&parsed.method);
+        let base = parsed.url.split('?').next().unwrap_or(&parsed.url);
+        self.pattern = if parsed.url.contains('?') {
+            format!("{}?*", base)
+        } else {
+            format!("{}*", base)
+        };
+        if self.name.trim().is_empty() || self.name == "Local fixture" {
+            let leaf = base
+                .trim_end_matches('/')
+                .rsplit('/')
+                .find(|s| !s.is_empty())
+                .unwrap_or("endpoint");
+            self.name = format!("Mock {}", leaf);
+        }
+        if let Some(gql) = graphql_info(&parsed.method, &parsed.body) {
+            if gql.operation != "Anonymous" {
+                self.graphql_name = gql.operation;
+            }
+        }
+        true
+    }
 }
 
 struct BpEditor {
@@ -203,6 +276,7 @@ pub struct App {
     composer_url: String,
     composer_headers: String,
     composer_body: String,
+    composer_curl_input: String,
     composer_tab: ComposerTab,
     composer_response: Option<ComposerResponse>,
     pending_send: Option<Receiver<SendOutcome>>,
@@ -213,6 +287,10 @@ pub struct App {
     catch_enabled: bool,
     map_filter: String,
     map_test_url: String,
+    quick_mock_url: String,
+    quick_mock_method: RuleMethod,
+    quick_mock_scenario: MockScenario,
+    quick_mock_body: String,
     bp_filter: String,
     bp_test_url: String,
     new_ssl_domain: String,
@@ -299,6 +377,7 @@ impl App {
             composer_url: url,
             composer_headers: headers,
             composer_body: body,
+            composer_curl_input: String::new(),
             composer_tab: ComposerTab::Body,
             composer_response: None,
             pending_send: None,
@@ -311,6 +390,10 @@ impl App {
             catch_enabled: false,
             map_filter: String::new(),
             map_test_url: String::new(),
+            quick_mock_url: String::new(),
+            quick_mock_method: RuleMethod::Any,
+            quick_mock_scenario: MockScenario::Success,
+            quick_mock_body: MockScenario::Success.default_body(),
             bp_filter: String::new(),
             bp_test_url: String::new(),
             new_ssl_domain: String::new(),
@@ -460,6 +543,12 @@ impl App {
                 }
                 proxy::ProxyEvent::Breakpoint(bp) => {
                     self.open_live_breakpoint(bp);
+                }
+                proxy::ProxyEvent::RemoteConfigUpdated(cfg) => {
+                    self.map_enabled = cfg.map_enabled;
+                    self.map_rules = cfg.map_rules;
+                    self.ssl_proxying_enabled = cfg.ssl_proxying_enabled;
+                    self.ssl_allowlist = cfg.ssl_allowlist;
                 }
                 proxy::ProxyEvent::Error(message) => {
                     self.proxy_error = Some(message.clone());
@@ -1311,6 +1400,241 @@ impl App {
         });
     }
 
+    /// Ensure any domain present in a URL or pattern is added to `ssl_allowlist`
+    /// so HTTPS Device UI Tests intercept and mock it without manual allowlist edits.
+    fn ensure_ssl_domain_for_pattern(&mut self, pattern: &str) -> Option<String> {
+        let domain = extract_domain_from_pattern(pattern)?;
+        if !self
+            .ssl_allowlist
+            .iter()
+            .any(|d| d.eq_ignore_ascii_case(&domain) || domain_matches(d, &domain))
+        {
+            self.ssl_allowlist.push(domain.clone());
+            self.log(
+                Level::Info,
+                "SSL Allowlist",
+                format!(
+                    "Auto-added \"{}\" to SSL Proxying Allowlist for Device UI Test interception",
+                    domain
+                ),
+            );
+            return Some(domain);
+        }
+        None
+    }
+
+    fn import_curl_to_composer(&mut self, ctx: &egui::Context) {
+        let Some(parsed) = parse_curl(&self.composer_curl_input) else {
+            self.toast_now(ctx, "Paste a valid curl command or http(s):// URL first");
+            return;
+        };
+        self.composer_method = parsed.method.clone();
+        self.composer_url = parsed.url.clone();
+        self.composer_headers = parsed
+            .headers
+            .iter()
+            .map(|(k, v)| format!("{}: {}", k, v))
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.composer_body = parsed.body.clone();
+        self.composer_tab = if parsed.body.is_empty() {
+            ComposerTab::Headers
+        } else {
+            ComposerTab::Body
+        };
+        let _ = self.ensure_ssl_domain_for_pattern(&parsed.url);
+        self.sync_proxy_config();
+        self.log(
+            Level::Info,
+            "Composer",
+            format!("Imported cURL: {} {}", parsed.method, parsed.url),
+        );
+        self.toast_now(ctx, "Imported cURL into Composer — click Send to inspect response");
+    }
+
+    fn save_composer_as_mock(&mut self, ctx: &egui::Context) {
+        let url = self.composer_url.trim().to_string();
+        if url.is_empty() {
+            self.toast_now(ctx, "Enter or import a URL in Composer first");
+            return;
+        }
+        let base = url.split('?').next().unwrap_or(&url).trim_end_matches('/');
+        let pattern = if url.contains('?') {
+            format!("{}?*", base)
+        } else {
+            format!("{}*", base)
+        };
+        let leaf = base
+            .rsplit('/')
+            .find(|s| !s.is_empty())
+            .unwrap_or("endpoint");
+        let name = format!("Mock {}", leaf);
+        let method = rule_method_for(&self.composer_method);
+        let (status, body) = match &self.composer_response {
+            Some(resp) if resp.status > 0 && !resp.body.is_empty() => {
+                (resp.status, resp.body.clone())
+            }
+            _ => (200, MockScenario::Success.default_body()),
+        };
+        let scenario = if status >= 400 {
+            MockScenario::Error
+        } else {
+            MockScenario::Success
+        };
+        let gql_name = graphql_info(&self.composer_method, &self.composer_body)
+            .map(|g| {
+                if g.operation == "Anonymous" {
+                    String::new()
+                } else {
+                    g.operation
+                }
+            })
+            .unwrap_or_default();
+
+        let id = self.map_rules.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+        let mut rule = MapRule {
+            id,
+            name: name.clone(),
+            pattern: pattern.clone(),
+            method,
+            status,
+            content_type: "application/json".into(),
+            delay_ms: 20,
+            body: body.clone(),
+            graphql_name: gql_name,
+            enabled: true,
+            hits: 0,
+            active_scenario: scenario,
+            ..MapRule::default()
+        };
+        match scenario {
+            MockScenario::Success => {
+                rule.success_status = status;
+                rule.success_body = body;
+            }
+            MockScenario::Error => {
+                rule.error_status = status;
+                rule.error_body = body;
+            }
+            MockScenario::Empty => {
+                rule.empty_status = status;
+                rule.empty_body = body;
+            }
+        }
+        self.map_rules.insert(0, rule);
+        self.map_enabled = true;
+        let _ = self.ensure_ssl_domain_for_pattern(&pattern);
+        self.sync_proxy_config();
+        self.log(
+            Level::Info,
+            "Map Local",
+            format!("Saved Composer response as mock rule \"{}\" ({})", name, pattern),
+        );
+        self.toast_now(
+            ctx,
+            &format!("Saved as Map Local mock: {} (Engine ON + SSL Allowlisted)", name),
+        );
+    }
+
+    fn add_quick_direct_mock(&mut self, ctx: &egui::Context) {
+        let raw = self.quick_mock_url.trim().to_string();
+        if raw.is_empty() {
+            self.toast_now(ctx, "Enter a direct URL, domain/path pattern, or paste a cURL command");
+            return;
+        }
+        let (method, pattern, gql_name) = if raw.to_ascii_lowercase().starts_with("curl ") {
+            if let Some(parsed) = parse_curl(&raw) {
+                let base = parsed.url.split('?').next().unwrap_or(&parsed.url);
+                let pat = if parsed.url.contains('?') {
+                    format!("{}?*", base)
+                } else {
+                    format!("{}*", base)
+                };
+                let gql = graphql_info(&parsed.method, &parsed.body)
+                    .map(|g| if g.operation == "Anonymous" { String::new() } else { g.operation })
+                    .unwrap_or_default();
+                (rule_method_for(&parsed.method), pat, gql)
+            } else {
+                (self.quick_mock_method, raw.clone(), String::new())
+            }
+        } else {
+            (self.quick_mock_method, raw.clone(), String::new())
+        };
+
+        let leaf = pattern
+            .split('?')
+            .next()
+            .unwrap_or(&pattern)
+            .trim_end_matches('*')
+            .trim_end_matches('/')
+            .rsplit('/')
+            .find(|s| !s.is_empty())
+            .unwrap_or("direct");
+        let name = format!("Direct Mock {}", leaf);
+        let scenario = self.quick_mock_scenario;
+        let status = scenario.default_status();
+        let body = if self.quick_mock_body.trim().is_empty() {
+            scenario.default_body()
+        } else {
+            self.quick_mock_body.clone()
+        };
+
+        let id = self.map_rules.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+        let mut rule = MapRule {
+            id,
+            name: name.clone(),
+            pattern: pattern.clone(),
+            method,
+            status,
+            content_type: "application/json".into(),
+            delay_ms: 15,
+            body: body.clone(),
+            graphql_name: gql_name,
+            enabled: true,
+            hits: 0,
+            active_scenario: scenario,
+            ..MapRule::default()
+        };
+        match scenario {
+            MockScenario::Success => {
+                rule.success_status = status;
+                rule.success_body = body;
+            }
+            MockScenario::Error => {
+                rule.error_status = status;
+                rule.error_body = body;
+            }
+            MockScenario::Empty => {
+                rule.empty_status = status;
+                rule.empty_body = body;
+            }
+        }
+        self.map_rules.insert(0, rule);
+        self.map_enabled = true;
+        let _ = self.ensure_ssl_domain_for_pattern(&pattern);
+        self.sync_proxy_config();
+        self.quick_mock_url.clear();
+        self.log(
+            Level::Info,
+            "Map Local",
+            format!(
+                "Hooked direct mock \"{}\" ({}) [{} {}]",
+                name,
+                pattern,
+                scenario.label(),
+                status
+            ),
+        );
+        self.toast_now(
+            ctx,
+            &format!(
+                "Direct Mock hooked on 127.0.0.1:{} ({})",
+                self.proxy_port,
+                scenario.label()
+            ),
+        );
+    }
+
     fn open_map_editor(&mut self, rule: Option<MapRule>) {
         self.map_editor = Some(match rule {
             Some(r) => MapEditor {
@@ -1324,44 +1648,71 @@ impl App {
                 body: r.body,
                 graphql_name: r.graphql_name,
                 enabled: r.enabled,
+                active_scenario: r.active_scenario,
+                success_status: r.success_status.to_string(),
+                success_body: r.success_body,
+                error_status: r.error_status.to_string(),
+                error_body: r.error_body,
+                empty_status: r.empty_status.to_string(),
+                empty_body: r.empty_body,
+                curl_paste: String::new(),
             },
-            None => MapEditor {
-                id: None,
-                name: "Local fixture".into(),
-                pattern: "*/v1/products?*".into(),
-                method: RuleMethod::Get,
-                status: "200".into(),
-                content_type: "application/json".into(),
-                delay: "20".into(),
-                body: r#"{
+            None => {
+                let default_rule = MapRule::default();
+                let default_body = r#"{
   "items": [
     { "id": "prd_local_1", "name": "Local Test Product", "price": 42.00 }
   ],
   "source": "map-local"
 }"#
-                .into(),
-                graphql_name: String::new(),
-                enabled: true,
-            },
+                .to_string();
+                MapEditor {
+                    id: None,
+                    name: "Local fixture".into(),
+                    pattern: "*/v1/products?*".into(),
+                    method: RuleMethod::Get,
+                    status: "200".into(),
+                    content_type: "application/json".into(),
+                    delay: "20".into(),
+                    body: default_body.clone(),
+                    graphql_name: String::new(),
+                    enabled: true,
+                    active_scenario: MockScenario::Success,
+                    success_status: "200".into(),
+                    success_body: default_body,
+                    error_status: default_rule.error_status.to_string(),
+                    error_body: default_rule.error_body,
+                    empty_status: default_rule.empty_status.to_string(),
+                    empty_body: default_rule.empty_body,
+                    curl_paste: String::new(),
+                }
+            }
         });
     }
 
     fn open_map_editor_for_capture(&mut self, c: &Capture) {
         let content_type = header_value(&c.resp_headers, "content-type")
             .unwrap_or_else(|| "application/json".into());
-        self.open_map_editor(Some(MapRule {
+        let status = if c.status == 0 { 200 } else { c.status };
+        let body = if c.resp_body.is_empty() {
+            "{\n  \"source\": \"map-local\"\n}".into()
+        } else {
+            c.resp_body.clone()
+        };
+        let active_scenario = if status >= 400 {
+            MockScenario::Error
+        } else {
+            MockScenario::Success
+        };
+        let mut rule = MapRule {
             id: u64::MAX,
             name: capture_rule_name(c, "Mock"),
             pattern: capture_pattern(c),
             method: rule_method_for(&c.method),
-            status: if c.status == 0 { 200 } else { c.status },
+            status,
             content_type,
             delay_ms: c.latency_ms,
-            body: if c.resp_body.is_empty() {
-                "{\n  \"source\": \"map-local\"\n}".into()
-            } else {
-                c.resp_body.clone()
-            },
+            body: body.clone(),
             graphql_name: c
                 .graphql
                 .as_ref()
@@ -1369,7 +1720,17 @@ impl App {
                 .unwrap_or_default(),
             enabled: true,
             hits: 0,
-        }));
+            active_scenario,
+            ..MapRule::default()
+        };
+        if active_scenario == MockScenario::Error {
+            rule.error_status = status;
+            rule.error_body = body;
+        } else {
+            rule.success_status = status;
+            rule.success_body = body;
+        }
+        self.open_map_editor(Some(rule));
         // Mark as a new rule even though it was filled from a capture.
         if let Some(ed) = &mut self.map_editor {
             ed.id = None;
@@ -1377,7 +1738,7 @@ impl App {
     }
 
     fn save_map_editor(&mut self, ctx: &egui::Context) {
-        let Some(ed) = self.map_editor.take() else {
+        let Some(mut ed) = self.map_editor.take() else {
             return;
         };
         if ed.name.trim().is_empty() || ed.pattern.trim().is_empty() {
@@ -1385,6 +1746,7 @@ impl App {
             self.toast_now(ctx, "Give the mapping a name and a URL pattern");
             return;
         }
+        ed.sync_current_to_slot();
         let rule = MapRule {
             id: ed.id.unwrap_or(0),
             name: ed.name.trim().to_string(),
@@ -1401,7 +1763,15 @@ impl App {
             graphql_name: ed.graphql_name.trim().to_string(),
             enabled: ed.enabled,
             hits: 0,
+            active_scenario: ed.active_scenario,
+            success_status: ed.success_status.trim().parse::<u16>().unwrap_or(200),
+            success_body: ed.success_body,
+            error_status: ed.error_status.trim().parse::<u16>().unwrap_or(500),
+            error_body: ed.error_body,
+            empty_status: ed.empty_status.trim().parse::<u16>().unwrap_or(200),
+            empty_body: ed.empty_body,
         };
+        let _ = self.ensure_ssl_domain_for_pattern(&rule.pattern);
         if let Some(id) = ed.id {
             if let Some(existing) = self.map_rules.iter_mut().find(|r| r.id == id) {
                 let hits = existing.hits;
@@ -1417,6 +1787,7 @@ impl App {
             self.log(Level::Info, "Map Local", format!("New mapping created: {}", rule.name));
         }
         self.map_enabled = true;
+        self.sync_proxy_config();
         self.toast_now(ctx, &format!("Mapping saved: {}", rule.name));
     }
 

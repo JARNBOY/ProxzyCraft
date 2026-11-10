@@ -90,6 +90,7 @@ impl App {
 
         // ---- toolbar -------------------------------------------------------
         let mut create_new = false;
+        let mut do_quick_mock = false;
         ui.horizontal(|ui| {
             if primary_button(ui, "+  New mapping").clicked() {
                 create_new = true;
@@ -105,12 +106,101 @@ impl App {
             search_box(ui, &mut self.map_filter, 230.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
-                    RichText::new("click a rule name to edit it")
+                    RichText::new("click a rule name to edit · switch Success / Error / Empty in 1 click")
                         .size(10.0)
                         .color(FAINT),
                 );
             });
         });
+        ui.add_space(8.0);
+
+        // ---- Direct URL / Domain / cURL Hook Bar (Device Test Ready) --------
+        Frame::none()
+            .fill(PANEL)
+            .stroke(Stroke::new(1.0, BORDER))
+            .rounding(9.0)
+            .inner_margin(Margin::symmetric(12.0, 9.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    pill(
+                        ui,
+                        "DIRECT URL / cURL HOOK",
+                        GREEN,
+                        Color32::from_rgba_unmultiplied(61, 214, 149, 18),
+                    );
+                    egui::ComboBox::from_id_salt("quick_mock_method")
+                        .width(68.0)
+                        .selected_text(
+                            RichText::new(self.quick_mock_method.label())
+                                .font(mono(10.0))
+                                .color(method_color(self.quick_mock_method.label())),
+                        )
+                        .show_ui(ui, |ui| {
+                            for m in [
+                                RuleMethod::Any,
+                                RuleMethod::Get,
+                                RuleMethod::Post,
+                                RuleMethod::Put,
+                                RuleMethod::Delete,
+                            ] {
+                                ui.selectable_value(&mut self.quick_mock_method, m, m.label());
+                            }
+                        });
+                    let url_w = (ui.available_width() - 375.0).max(160.0);
+                    input_frame().show(ui, |ui| {
+                        ui.set_width(url_w);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.quick_mock_url)
+                                .frame(false)
+                                .desired_width(url_w)
+                                .font(TextStyle::Monospace)
+                                .text_color(TEXT)
+                                .hint_text(
+                                    "https://api.mycorp.com/v1/orders*  or  */v1/checkout*  or paste curl",
+                                ),
+                        );
+                    });
+                    for sc in [MockScenario::Success, MockScenario::Error, MockScenario::Empty] {
+                        let active = self.quick_mock_scenario == sc;
+                        if chip(ui, sc.label(), active).clicked() && !active {
+                            self.quick_mock_scenario = sc;
+                            self.quick_mock_body = sc.default_body();
+                        }
+                    }
+                    if primary_button(ui, "+ Hook Mock").clicked() {
+                        do_quick_mock = true;
+                    }
+                });
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Return JSON:")
+                            .size(9.5)
+                            .color(FAINT)
+                            .strong(),
+                    );
+                    let body_w = (ui.available_width() - 190.0).max(150.0);
+                    input_frame().show(ui, |ui| {
+                        ui.set_width(body_w);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.quick_mock_body)
+                                .frame(false)
+                                .desired_width(body_w)
+                                .font(TextStyle::Monospace)
+                                .text_color(TEXT)
+                                .hint_text("{\"ok\":true,\"data\":[]}"),
+                        );
+                    });
+                    ui.label(
+                        RichText::new(format!("Auto-hooks 127.0.0.1:{} + SSL Allowlist", self.proxy_port))
+                            .font(mono(9.0))
+                            .color(FAINT),
+                    );
+                });
+            });
+        if do_quick_mock {
+            self.add_quick_direct_mock(ctx);
+        }
         ui.add_space(10.0);
 
         // ---- two panes: rules table + live tester --------------------------
@@ -119,6 +209,8 @@ impl App {
         let left_w = (total - right_w - 16.0).max(430.0);
         let mut edit_existing: Option<MapRule> = None;
         let mut toggle_id: Option<u64> = None;
+        let mut switch_scenario_action: Option<(u64, MockScenario)> = None;
+        let mut copy_text_action: Option<(String, &'static str)> = None;
 
         ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -256,6 +348,54 @@ impl App {
                                                     };
                                                     let _ = tip;
                                                     dot(ui, dot_color, 6.0);
+                                                },
+                                            );
+                                        });
+                                        ui.add_space(5.0);
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new("SCENARIO:")
+                                                    .size(8.5)
+                                                    .color(FAINT)
+                                                    .strong(),
+                                            );
+                                            for sc in [
+                                                MockScenario::Success,
+                                                MockScenario::Error,
+                                                MockScenario::Empty,
+                                            ] {
+                                                let active = rule.active_scenario == sc;
+                                                let st = match sc {
+                                                    MockScenario::Success => rule.success_status,
+                                                    MockScenario::Error => rule.error_status,
+                                                    MockScenario::Empty => rule.empty_status,
+                                                };
+                                                let label = format!("{} ({})", sc.label(), st);
+                                                if chip(ui, &label, active).clicked() && !active {
+                                                    switch_scenario_action = Some((rule.id, sc));
+                                                }
+                                            }
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    let fixture = rule.fixture_path();
+                                                    let resp = ui.add(
+                                                        egui::Label::new(
+                                                            RichText::new(&fixture)
+                                                                .font(mono(9.0))
+                                                                .color(FAINT),
+                                                        )
+                                                        .sense(Sense::click()),
+                                                    );
+                                                    if resp
+                                                        .on_hover_text("Click to copy canonical fixture path convention")
+                                                        .clicked()
+                                                    {
+                                                        copy_text_action = Some((
+                                                            fixture,
+                                                            "Copied canonical mock fixture path",
+                                                        ));
+                                                    }
                                                 },
                                             );
                                         });
@@ -432,6 +572,61 @@ impl App {
                                 });
 
                             ui.add_space(10.0);
+                            section_label(ui, "UI Test Hook Connector (WireMock / MCP)");
+                            ui.add_space(5.0);
+                            Frame::none()
+                                .fill(PANEL)
+                                .stroke(Stroke::new(1.0, BORDER))
+                                .rounding(9.0)
+                                .inner_margin(Margin::same(11.0))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Control hook active on http://127.0.0.1:{}/__proxzy/*",
+                                            self.proxy_port
+                                        ))
+                                        .font(mono(9.5))
+                                        .color(GREEN),
+                                    );
+                                    ui.label(
+                                        RichText::new(
+                                            "MobileWright, mobile-mcp, XCTest, or curl can switch scenarios and verify hit counts live:",
+                                        )
+                                        .size(9.5)
+                                        .color(MUTED),
+                                    );
+                                    ui.add_space(6.0);
+                                    let port = self.proxy_port;
+                                    ui.horizontal(|ui| {
+                                        if secondary_button(ui, "Copy Health Check").clicked() {
+                                            copy_text_action = Some((
+                                                format!("curl -s http://127.0.0.1:{}/__proxzy/health", port),
+                                                "Copied /__proxzy/health curl command",
+                                            ));
+                                        }
+                                        if secondary_button(ui, "Copy Scenario Switch").clicked() {
+                                            copy_text_action = Some((
+                                                format!(
+                                                    "curl -s -X POST http://127.0.0.1:{}/__proxzy/scenario -d '{{\"pattern\":\"/v1/checkout\",\"scenario\":\"error\"}}'",
+                                                    port
+                                                ),
+                                                "Copied /__proxzy/scenario curl command",
+                                            ));
+                                        }
+                                    });
+                                    ui.add_space(4.0);
+                                    if secondary_button(ui, "Copy Dynamic Mock Inject").clicked() {
+                                        copy_text_action = Some((
+                                            format!(
+                                                "curl -s -X POST http://127.0.0.1:{}/__proxzy/mock -d '{{\"pattern\":\"https://api.shopwave.dev/v1/orders*\",\"scenario\":\"success\",\"status\":200,\"body\":\"{{\\\"ok\\\":true}}\"}}'",
+                                                port
+                                            ),
+                                            "Copied /__proxzy/mock curl command",
+                                        ));
+                                    }
+                                });
+
+                            ui.add_space(10.0);
                             section_label(ui, "How mapping works");
                             ui.add_space(5.0);
                             Frame::none()
@@ -449,11 +644,39 @@ impl App {
                 });
             });
 
+        if let Some((id, target_sc)) = switch_scenario_action {
+            if let Some(r) = self.map_rules.iter_mut().find(|r| r.id == id) {
+                r.switch_scenario(target_sc);
+                r.enabled = true;
+                let name = r.name.clone();
+                let st = r.status;
+                self.map_enabled = true;
+                self.sync_proxy_config();
+                self.log(
+                    Level::Info,
+                    "Map Local",
+                    format!(
+                        "Switched \"{}\" to {} ({})",
+                        name,
+                        target_sc.label(),
+                        st
+                    ),
+                );
+                self.toast_now(
+                    ctx,
+                    &format!("Switched \"{}\" → {} ({})", name, target_sc.label(), st),
+                );
+            }
+        }
+        if let Some((text, msg)) = copy_text_action {
+            self.copy(ctx, text, msg);
+        }
         if let Some(id) = toggle_id {
             if let Some(r) = self.map_rules.iter_mut().find(|r| r.id == id) {
                 r.enabled = !r.enabled;
                 let state = r.enabled;
                 let name = r.name.clone();
+                self.sync_proxy_config();
                 self.log(
                     Level::Info,
                     "Map Local",
@@ -1082,6 +1305,26 @@ impl App {
                                 .auto_shrink([false, false])
                                 .max_height(574.0)
                                 .show(ui, |ui| {
+                                    section_label(ui, "Quick import from cURL or direct URL");
+                                    ui.add_space(4.0);
+                                    ui.horizontal(|ui| {
+                                        let w = (ui.available_width() - 125.0).max(200.0);
+                                        input_frame().show(ui, |ui| {
+                                            ui.set_width(w);
+                                            ui.add(
+                                                egui::TextEdit::singleline(&mut ed.curl_paste)
+                                                    .frame(false)
+                                                    .desired_width(w)
+                                                    .font(TextStyle::Monospace)
+                                                    .text_color(TEXT)
+                                                    .hint_text("Paste curl -X POST 'https://api.example.com/v1/checkout' ... or direct URL"),
+                                            );
+                                        });
+                                        if secondary_button(ui, "Fill from cURL").clicked() {
+                                            let _ = ed.apply_curl();
+                                        }
+                                    });
+                                    ui.add_space(8.0);
                                     section_label(ui, "Matching rule");
                                     ui.add_space(4.0);
                                     ui.horizontal(|ui| {
@@ -1177,6 +1420,7 @@ impl App {
                                         graphql_name: ed.graphql_name.clone(),
                                         enabled: true,
                                         hits: 0,
+                                        ..MapRule::default()
                                     };
                                     let matches: Vec<&Capture> = captures
                                         .iter()
@@ -1291,17 +1535,34 @@ impl App {
                                     });
 
                                     ui.add_space(10.0);
-                                    section_label(ui, "Response");
+                                    section_label(ui, "Response & Multi-Scenario Presets (Success / Error / Empty)");
                                     ui.add_space(4.0);
                                     ui.horizontal(|ui| {
+                                        let current_sc = ed.active_scenario;
+                                        for sc in [
+                                            MockScenario::Success,
+                                            MockScenario::Error,
+                                            MockScenario::Empty,
+                                        ] {
+                                            let active = current_sc == sc;
+                                            if chip(ui, sc.label(), active).clicked() && !active {
+                                                ed.switch_scenario(sc);
+                                            }
+                                        }
                                         if secondary_button(ui, "Format JSON").clicked() {
                                             ed.body = pretty_print(&ed.body);
                                         }
-                                        ui.label(
-                                            RichText::new("this exact body is returned locally")
-                                                .size(9.5)
+                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                            ui.label(
+                                                RichText::new(mock_fixture_path(
+                                                    ed.method,
+                                                    &ed.pattern,
+                                                    ed.active_scenario,
+                                                ))
+                                                .font(mono(9.0))
                                                 .color(FAINT),
-                                        );
+                                            );
+                                        });
                                     });
                                     ui.add_space(4.0);
                                     input_frame().show(ui, |ui| {
