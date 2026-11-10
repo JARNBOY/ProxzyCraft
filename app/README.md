@@ -144,3 +144,13 @@ Press **Clear Mac proxy** when you finish.
 - `src/rules_ui.rs` — shared rule tables and editors.
 - `src/model.rs` — sample traffic, rules and helper formatting.
 - `src/theme.rs` — colours, typography and shared widgets.
+
+## Status Code Helper
+Close Proxy In case look browser block internet from case if open Proxzy app not close proxy:
+```bash
+sudo networksetup -setwebproxystate "Wi-Fi" off && \
+sudo networksetup -setsecurewebproxystate "Wi-Fi" off && \
+sudo networksetup -setsocksfirewallproxystate "Wi-Fi" off && \
+sudo networksetup -setautoproxystatus "Wi-Fi" off
+```
+

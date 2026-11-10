@@ -190,3 +190,4 @@ The proxy generates a unique local Certificate Authority upon first launch:
 ## License
 
 This project is licensed under the [MIT License](LICENSE) &copy; 2026 Papon Supamongkonchai (JARNBOY).
+
