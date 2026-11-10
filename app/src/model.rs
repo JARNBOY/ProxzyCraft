@@ -24,6 +24,7 @@ pub fn method_color(method: &str) -> Color32 {
         "PUT" => Color32::from_rgb(96, 165, 250),
         "PATCH" => PURPLE,
         "DELETE" => RED,
+        "CONNECT" => Color32::from_rgb(148, 163, 184),
         "OPTIONS" | "HEAD" => MUTED,
         _ => TEXT,
     }
@@ -39,11 +40,12 @@ pub fn status_color(status: u16) -> Color32 {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ApiKind {
     Graphql,
     Rest,
     Media,
+    Tunnel,
     Other,
 }
 
@@ -53,6 +55,7 @@ impl ApiKind {
             ApiKind::Graphql => "GraphQL",
             ApiKind::Rest => "REST",
             ApiKind::Media => "Media",
+            ApiKind::Tunnel => "Tunnel",
             ApiKind::Other => "Other",
         }
     }
@@ -61,6 +64,7 @@ impl ApiKind {
             ApiKind::Graphql => PURPLE,
             ApiKind::Rest => Color32::from_rgb(120, 180, 255),
             ApiKind::Media => CYAN,
+            ApiKind::Tunnel => Color32::from_rgb(148, 163, 184),
             ApiKind::Other => MUTED,
         }
     }
@@ -126,7 +130,18 @@ impl Capture {
     /// True for calls that came through the local proxy (or the real Composer),
     /// as opposed to the seeded sample rows that ship with the POC.
     pub fn is_live(&self) -> bool {
-        matches!(self.protocol.as_str(), "HTTP/1.1" | "HTTPS (MITM)")
+        matches!(
+            self.protocol.as_str(),
+            "HTTP/1.1" | "HTTPS (MITM)" | "TCP Tunnel (Raw)"
+        )
+    }
+
+    pub fn is_tunnel(&self) -> bool {
+        self.method.eq_ignore_ascii_case("CONNECT") || self.kind == ApiKind::Tunnel
+    }
+
+    pub fn is_system_protected(&self) -> bool {
+        is_builtin_protected_domain(&self.host())
     }
 
     pub fn started_clock(&self) -> &str {
@@ -270,6 +285,41 @@ pub fn domain_matches(pattern: &str, target_host: &str) -> bool {
     false
 }
 
+/// Open-source safety list of system and certificate verification domains.
+/// These domains are ALWAYS safely bound as raw TCP data without TLS decryption
+/// to prevent breaking host OS push notifications, updates, and certificate validation.
+pub static BUILTIN_PROTECTED_DOMAINS: &[&str] = &[
+    // Apple System Services & Push Notifications
+    "*.push.apple.com",
+    "identity.apple.com",
+    "swscan.apple.com",
+    "swdist.apple.com",
+    "appldnld.apple.com",
+    "gateway.icloud.com",
+    // Certificate Authorities & Revocation (OCSP / CRL)
+    "*.digicert.com",
+    "*.symcb.com",
+    "*.symcd.com",
+    "*.verisign.com",
+    "ocsp.*",
+    "crl.*",
+    // Android & Google System Services
+    "connectivitycheck.gstatic.com",
+    "play.googleapis.com",
+    "android.clients.google.com",
+    // Microsoft System Update
+    "*.windowsupdate.com",
+];
+
+/// Returns true if the given host matches ProxzyCraft's Open-Source Safety Policy
+/// for protected system domains where TLS decoding must be bypassed.
+pub fn is_builtin_protected_domain(host: &str) -> bool {
+    let clean = host.split(':').next().unwrap_or(host).trim().to_lowercase();
+    BUILTIN_PROTECTED_DOMAINS
+        .iter()
+        .any(|pat| domain_matches(pat, &clean))
+}
+
 pub fn pattern_matches_graphql(pattern: &str, body: &str) -> bool {
     let name = pattern.trim();
     if name.is_empty() {
@@ -281,6 +331,9 @@ pub fn pattern_matches_graphql(pattern: &str, body: &str) -> bool {
 }
 
 pub fn detect_kind(method: &str, url: &str, body: &str) -> ApiKind {
+    if method.eq_ignore_ascii_case("CONNECT") {
+        return ApiKind::Tunnel;
+    }
     let u = url.to_lowercase();
     if u.contains("graphql") || u.contains("/gql") || body.contains("\"query\"") {
         ApiKind::Graphql
@@ -2660,5 +2713,65 @@ mod rule_tests {
         assert_eq!(session.drift_warnings, 1);
         assert_eq!(session.breaking_drifts, 1);
         assert_eq!(session.additive_drifts, 2);
+    }
+
+    #[test]
+    fn protected_system_domains_and_tunnel_capture_attributes() {
+        assert!(is_builtin_protected_domain("courier.push.apple.com"));
+        assert!(is_builtin_protected_domain("ocsp.digicert.com"));
+        assert!(is_builtin_protected_domain("swscan.apple.com:443"));
+        assert!(is_builtin_protected_domain("connectivitycheck.gstatic.com"));
+        assert!(!is_builtin_protected_domain("api.trueid.net"));
+        assert!(!is_builtin_protected_domain("api-preprod.trueid.net:443"));
+
+        let tunnel_capture = Capture {
+            id: 1,
+            method: "CONNECT".to_string(),
+            url: "https://ocsp.digicert.com:443".to_string(),
+            status: 200,
+            latency_ms: 12,
+            size_bytes: 840,
+            kind: detect_kind("CONNECT", "https://ocsp.digicert.com:443", ""),
+            started: "10:00:00".to_string(),
+            remote: "ocsp.digicert.com:443 via 127.0.0.1".to_string(),
+            protocol: "TCP Tunnel (Raw)".to_string(),
+            req_headers: vec![],
+            req_body: String::new(),
+            resp_headers: vec![],
+            resp_body: "Raw bytes".to_string(),
+            graphql: None,
+            mock: None,
+            pinned: false,
+            aborted: false,
+        };
+
+        assert_eq!(tunnel_capture.kind, ApiKind::Tunnel);
+        assert!(tunnel_capture.is_tunnel());
+        assert!(tunnel_capture.is_system_protected());
+        assert!(tunnel_capture.is_live());
+
+        let app_capture = Capture {
+            id: 2,
+            method: "CONNECT".to_string(),
+            url: "https://api-preprod.trueid.net:443".to_string(),
+            status: 200,
+            latency_ms: 25,
+            size_bytes: 1200,
+            kind: detect_kind("CONNECT", "https://api-preprod.trueid.net:443", ""),
+            started: "10:00:01".to_string(),
+            remote: "api-preprod.trueid.net:443 via 127.0.0.1".to_string(),
+            protocol: "TCP Tunnel (Raw)".to_string(),
+            req_headers: vec![],
+            req_body: String::new(),
+            resp_headers: vec![],
+            resp_body: "Raw bytes".to_string(),
+            graphql: None,
+            mock: None,
+            pinned: false,
+            aborted: false,
+        };
+
+        assert!(app_capture.is_tunnel());
+        assert!(!app_capture.is_system_protected());
     }
 }

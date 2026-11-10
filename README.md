@@ -23,7 +23,9 @@ Nothing is locked behind accounts, trials, telemetry, or paid tiers &mdash; 100%
 * **Testcase-Scoped Session Audits:** Enforce that screen play tests only record the exact domains and paths for that use case, keeping unrelated background traffic out of fixtures.
 * **Version-Stamped Regression &amp; Contract Drift:** Detect `BREAKING` (missing keys) vs `ADDITIVE` (new fields) schema drifts between live APIs and versioned mocks across `preprod`, `staging`, and `prod`.
 * **Dynamic Property &amp; User Injection:** Inject test credentials (phone, OTP, user tier) dynamically at test runtime via `POST /__proxzy/inject` without modifying base fixture files.
-* **Selective SSL Proxying:** Intercepts HTTPS **only** for domains in your explicit allowlist (`ssl_allowlist`). Host browsers (Chrome, Safari), Apple Push Services, and Spotify continue without TLS certificate errors.
+* **Universal Traffic Visibility &amp; Zero Blind Spots:** 100% of HTTP and HTTPS CONNECT connections are captured and displayed in `All Traffic` with real transferred byte counts and connection latency.
+* **Open-Source Safety Policy (Protected Raw Data Binding):** Built-in risk-protection prevents TLS decryption on sensitive system endpoints (Apple APNS `*.push.apple.com`, OS Updates `swscan.apple.com`, OCSP revocation `*.digicert.com`, and Google Play Services). These connections are safely bound as raw TCP data without TLS tampering.
+* **1-Click TLS Decryption:** Unlisted application domains appear as `RAW TUNNEL` rows with a 1-click `[+ Enable TLS Decryption]` action right in the Inspector &mdash; no manual domain typing required.
 * **Zero-Dependency Universal SDK (`@proxzy/client`):** Drop-in TypeScript client in `packages/proxzy-client` for seamless integration into any test harness.
 
 ---

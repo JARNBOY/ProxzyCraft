@@ -493,14 +493,19 @@ async fn handle_connection(
 
     if method.eq_ignore_ascii_case("CONNECT") {
         let (host, port) = split_host_port(&target, 443);
-        let intercept = ctx
-            .config
-            .read()
-            .map(|c| c.should_intercept(&host))
-            .unwrap_or(false);
+        // OPEN-SOURCE SAFETY POLICY:
+        // Protected system domains (Apple APNS, OS Updates, OCSP/CRLs) are ALWAYS bound to raw TCP data
+        // to prevent certificate errors or device network breakage.
+        let is_protected = crate::model::is_builtin_protected_domain(&host);
+        let intercept = !is_protected
+            && ctx
+                .config
+                .read()
+                .map(|c| c.should_intercept(&host))
+                .unwrap_or(false);
 
         if !intercept {
-            return passthrough_tunnel(stream, &host, port, ctx).await;
+            return passthrough_tunnel(stream, &host, port, peer, is_protected, ctx).await;
         }
 
         stream
@@ -550,8 +555,11 @@ async fn passthrough_tunnel(
     mut client: TcpStream,
     host: &str,
     port: u16,
+    peer: SocketAddr,
+    is_protected: bool,
     ctx: ConnCtx,
 ) -> Result<(), String> {
+    let started = Instant::now();
     let addr = format!("{}:{}", host, port);
     let mut upstream = tokio::time::timeout(Duration::from_secs(15), TcpStream::connect(&addr))
         .await
@@ -565,10 +573,89 @@ async fn passthrough_tunnel(
 
     let _ = ctx.tx.send(ProxyEvent::Log {
         level: "Info".into(),
-        message: format!("Passthrough tunnel: {}:{} (TLS bypassed)", host, port),
+        message: format!(
+            "Passthrough tunnel: {}:{} ({})",
+            host,
+            port,
+            if is_protected {
+                "System Protected Raw Data"
+            } else {
+                "TLS Bypassed"
+            }
+        ),
     });
 
-    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+    let copy_res = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+    let (c2s, s2c) = match copy_res {
+        Ok(bytes) => bytes,
+        Err(_) => (0, 0),
+    };
+    let total_bytes = c2s + s2c;
+    let latency_ms = started.elapsed().as_millis() as u64;
+
+    let resp_body = if is_protected {
+        format!(
+            "🛡️ [SYSTEM PROTECTED RAW DATA TUNNEL]\nHost: {}:{}\nTransferred: {} bytes (Client: {} B, Server: {} B)\nDuration: {} ms\n\nPolicy Notice:\nThis domain matches ProxzyCraft's Open-Source Safety Policy (Apple APNS / OCSP / OS Update).\nProxzyCraft safely bound raw TCP data without TLS decryption to preserve host OS and security certificate integrity.",
+            host, port, total_bytes, c2s, s2c, latency_ms
+        )
+    } else {
+        format!(
+            "🔒 [RAW TCP TUNNEL - TLS BYPASSED]\nHost: {}:{}\nTransferred: {} bytes (Client: {} B, Server: {} B)\nDuration: {} ms\n\nStatus:\nThis domain is currently passed through without decryption because it is not in your SSL Allowlist.\nClick '+ Enable TLS Decryption' in the Inspector to decrypt and inspect HTTP/JSON traffic for this domain.",
+            host, port, total_bytes, c2s, s2c, latency_ms
+        )
+    };
+
+    let capture = Capture {
+        id: 0,
+        method: "CONNECT".to_string(),
+        url: format!("https://{}:{}", host, port),
+        status: 200,
+        latency_ms: latency_ms.max(1),
+        size_bytes: total_bytes,
+        kind: ApiKind::Tunnel,
+        started: now_stamp(),
+        remote: format!("{}:{} via {}", host, port, peer.ip()),
+        protocol: "TCP Tunnel (Raw)".to_string(),
+        req_headers: vec![
+            ("Host".into(), host.to_string()),
+            ("Port".into(), port.to_string()),
+            (
+                "Tunnel-Type".into(),
+                if is_protected {
+                    "System-Protected".into()
+                } else {
+                    "Raw-Passthrough".into()
+                },
+            ),
+        ],
+        req_body: String::new(),
+        resp_headers: vec![
+            (
+                "Content-Type".into(),
+                "application/octet-stream; tunnel=passthrough".into(),
+            ),
+            (
+                "X-Proxzy-Tunnel".into(),
+                if is_protected {
+                    "Protected-Raw-Data"
+                } else {
+                    "Bypassed-Raw-Data"
+                }
+                .into(),
+            ),
+            ("X-Transferred-Bytes".into(), total_bytes.to_string()),
+        ],
+        resp_body,
+        graphql: None,
+        mock: None,
+        pinned: false,
+        aborted: false,
+    };
+
+    if ctx.config.read().map(|c| c.recording).unwrap_or(true) {
+        let _ = ctx.tx.send(ProxyEvent::Capture(Box::new(capture)));
+    }
+
     Ok(())
 }
 

@@ -3021,13 +3021,34 @@ impl App {
                     }
                     self.new_ssl_domain.clear();
                 }
+                if secondary_button(ui, "Intercept All (*)")
+                    .on_hover_text("Intercept and decrypt all application HTTPS (*), while safely preserving raw data on protected system services")
+                    .clicked()
+                {
+                    self.enable_ssl_for_domain("*", ctx);
+                }
                 if secondary_button(ui, "Sample API").clicked() {
-                    if !self.ssl_allowlist.contains(&"*.shopwave.dev".to_string()) {
-                        self.ssl_allowlist.push("*.shopwave.dev".to_string());
-                        self.sync_proxy_config();
-                    }
+                    self.enable_ssl_for_domain("*.shopwave.dev", ctx);
                 }
             });
+            ui.add_space(8.0);
+
+            // Safety policy notice
+            Frame::none()
+                .fill(Color32::from_rgba_unmultiplied(61, 214, 149, 10))
+                .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(61, 214, 149, 45)))
+                .rounding(7.0)
+                .inner_margin(Margin::symmetric(10.0, 6.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        dot(ui, GREEN, 6.0);
+                        ui.label(
+                            RichText::new("🛡️ Safety Policy: Apple APNS, OS Updates & OCSP/CRLs always bind raw TCP data to prevent system certificate errors.")
+                                .size(9.5)
+                                .color(TEXT),
+                        );
+                    });
+                });
             ui.add_space(8.0);
 
             // List of domains
@@ -3041,7 +3062,7 @@ impl App {
                         ui.horizontal(|ui| {
                             dot(ui, GREEN, 6.0);
                             ui.label(
-                                RichText::new("Empty allowlist = All HTTPS passes through untouched. Your host browsers (Chrome/Safari) are 100% safe from SSL blocks.")
+                                RichText::new("Empty allowlist = All HTTPS passes through as raw TCP tunnels in All Traffic. You can click 'Enable TLS Decryption' on any domain in 1 click.")
                                     .size(9.5)
                                     .color(MUTED),
                             );

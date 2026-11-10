@@ -62,9 +62,11 @@ flowchart TB
 
 Follow these 5 invariants whenever operating or modifying ProxzyCraft:
 
-1. **Selective SSL Proxying Safe Default (`ssl_allowlist`)**:
-   - `ProxyConfig::should_intercept(host)` returns `false` when `ssl_proxying_enabled == false` **or** when `ssl_allowlist` is empty.
-   - Non-matching hosts use blind TCP passthrough (`tokio::io::copy_bidirectional`) so host browsers, OAuth providers, and Apple/Google system services never suffer TLS errors.
+1. **Universal Traffic Visibility & Protected Raw Data Binding (`is_builtin_protected_domain`)**:
+   - Every connection (HTTP or HTTPS CONNECT) is captured and displayed in `All Traffic` with real transfer byte counters and connection latency, eliminating blind spots.
+   - **Open-Source Safety Policy (Protected System Domains)**: High-risk system domains (Apple APNS `*.push.apple.com`, OS Updates `swscan.apple.com`, Certificate Revocation `*.digicert.com` / `ocsp.*`, and Google Play Services) are **ALWAYS bound to raw TCP data** without TLS decryption. This preserves macOS/Simulator stability and prevents SSL Pinning errors.
+   - **Unlisted Application Domains**: Bound to raw TCP data, displayed with badge `RAW TUNNEL`, and offer a 1-click **`[+ Enable TLS Decryption]`** button in Inspector to add them to `ssl_allowlist`.
+   - `ProxyConfig::should_intercept(host)` returns `false` when `ssl_proxying_enabled == false`, when `ssl_allowlist` is empty, or when `host` matches `is_builtin_protected_domain(host)`.
 2. **Automatic SSL Allowlist Sync on Mock Creation**:
    - Whenever a Map Local rule is created from a URL or pattern, extract its host with `extract_domain_from_pattern(pattern)` and register it in `ssl_allowlist` (handled automatically in UI via `App::ensure_ssl_domain_for_pattern` and in `/__proxzy/mock` via `handle_proxzy_control`).
 3. **3-Scenario Mock State Machine (`Success` / `Error` / `Empty` / `Passthrough`)**:

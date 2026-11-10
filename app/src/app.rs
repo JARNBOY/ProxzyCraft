@@ -1612,6 +1612,35 @@ impl App {
         None
     }
 
+    pub fn enable_ssl_for_domain(&mut self, domain: &str, ctx: &egui::Context) {
+        let clean = domain
+            .split(':')
+            .next()
+            .unwrap_or(domain)
+            .trim()
+            .to_lowercase();
+        if clean.is_empty() {
+            return;
+        }
+        if !self
+            .ssl_allowlist
+            .iter()
+            .any(|d| d.eq_ignore_ascii_case(&clean) || domain_matches(d, &clean))
+        {
+            self.ssl_allowlist.push(clean.clone());
+            self.ssl_proxying_enabled = true;
+            self.sync_proxy_config();
+            self.toast_now(ctx, &format!("Enabled TLS decryption for {}", clean));
+            self.log(
+                Level::Info,
+                "SSL Proxying",
+                format!("Added \"{}\" to SSL Allowlist", clean),
+            );
+        } else {
+            self.toast_now(ctx, &format!("{} is already in SSL Allowlist", clean));
+        }
+    }
+
     fn import_curl_to_composer(&mut self, ctx: &egui::Context) {
         let Some(parsed) = parse_curl(&self.composer_curl_input) else {
             self.toast_now(ctx, "Paste a valid curl command or http(s):// URL first");
@@ -3501,6 +3530,67 @@ impl App {
                 }
             });
 
+        if c.is_tunnel() {
+            ui.add_space(12.0);
+            let is_protected = c.is_system_protected();
+            let banner_color = if is_protected { GREEN } else { CYAN };
+            let host_to_enable = c.host();
+            let mut do_enable = false;
+            Frame::none()
+                .fill(Color32::from_rgba_unmultiplied(
+                    banner_color.r(),
+                    banner_color.g(),
+                    banner_color.b(),
+                    16,
+                ))
+                .stroke(Stroke::new(
+                    1.0,
+                    Color32::from_rgba_unmultiplied(
+                        banner_color.r(),
+                        banner_color.g(),
+                        banner_color.b(),
+                        85,
+                    ),
+                ))
+                .rounding(9.0)
+                .inner_margin(Margin::same(12.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        dot(ui, banner_color, 7.0);
+                        ui.label(
+                            RichText::new(if is_protected {
+                                "🛡️ Protected System Domain (Raw TCP Data Bound)"
+                            } else {
+                                "🔒 Raw TCP Tunnel (TLS Decryption Bypassed)"
+                            })
+                            .size(12.0)
+                            .strong()
+                            .color(banner_color),
+                        );
+                        if !is_protected {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if primary_button(ui, "Enable TLS Decryption").clicked() {
+                                    do_enable = true;
+                                }
+                            });
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(if is_protected {
+                            "This domain matches ProxzyCraft's Open-Source Safety Policy (Apple APNS / OCSP / OS Update). Raw TCP data is safely bound without TLS decryption to preserve host OS and security certificate integrity."
+                        } else {
+                            "This HTTPS connection was bound as raw TCP data because the domain is not in your SSL Allowlist. Click 'Enable TLS Decryption' to decrypt headers and JSON payloads on subsequent requests."
+                        })
+                        .size(10.5)
+                        .color(MUTED),
+                    );
+                });
+            if do_enable {
+                self.enable_ssl_for_domain(&host_to_enable, ui.ctx());
+            }
+        }
+
         if let Some(rule) = &c.mock {
             ui.add_space(12.0);
             Frame::none()
@@ -3903,6 +3993,29 @@ fn request_row(ui: &mut Ui, c: &Capture, selected: bool, alt: bool, height: f32)
                     ..Default::default()
                 },
             );
+        }
+        if c.is_tunnel() {
+            if c.is_system_protected() {
+                job.append(
+                    "  PROTECTED",
+                    0.0,
+                    egui::TextFormat {
+                        font_id: FontId::monospace(8.5),
+                        color: Color32::from_rgb(148, 163, 184),
+                        ..Default::default()
+                    },
+                );
+            } else {
+                job.append(
+                    "  RAW TUNNEL",
+                    0.0,
+                    egui::TextFormat {
+                        font_id: FontId::monospace(8.5),
+                        color: CYAN,
+                        ..Default::default()
+                    },
+                );
+            }
         }
         if c.pinned {
             job.append(
