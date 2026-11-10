@@ -235,18 +235,39 @@ pub fn pattern_matches_url(pattern: &str, url: &str) -> bool {
 /// port stripping, and wildcard catch-all (`*`).
 pub fn domain_matches(pattern: &str, target_host: &str) -> bool {
     let p = pattern.trim().to_lowercase();
-    let h = target_host.trim().to_lowercase();
-    let h = h.split(':').next().unwrap_or(&h);
+    let raw_h = target_host.trim().to_lowercase();
     if p.is_empty() {
         return false;
     }
     if p == "*" || p == "*.*" {
         return true;
     }
-    if let Some(suffix) = p.strip_prefix("*.") {
-        return h == suffix || h.ends_with(&format!(".{}", suffix));
+    if raw_h == p {
+        return true;
     }
-    h == p
+
+    let h_host = raw_h.split(':').next().unwrap_or(&raw_h);
+    let p_host = p.split(':').next().unwrap_or(&p);
+
+    if let Some(suffix) = p_host.strip_prefix("*.") {
+        if h_host == suffix || h_host.ends_with(&format!(".{}", suffix)) {
+            if let Some(p_port) = p.split(':').nth(1) {
+                let h_port = raw_h.split(':').nth(1).unwrap_or("443");
+                return h_port == p_port;
+            }
+            return true;
+        }
+    }
+
+    if h_host == p_host {
+        if let Some(p_port) = p.split(':').nth(1) {
+            let h_port = raw_h.split(':').nth(1).unwrap_or("443");
+            return h_port == p_port;
+        }
+        return true;
+    }
+
+    false
 }
 
 pub fn pattern_matches_graphql(pattern: &str, body: &str) -> bool {
@@ -1550,6 +1571,12 @@ mod rule_tests {
         assert!(domain_matches("api.github.com", "api.github.com"));
         assert!(domain_matches("api.github.com", "api.github.com:443"));
         assert!(!domain_matches("api.github.com", "github.com"));
+
+        assert!(domain_matches("api.dev.local:8443", "api.dev.local:8443"));
+        assert!(!domain_matches("api.dev.local:8443", "api.dev.local:443"));
+        assert!(domain_matches("api.dev.local", "api.dev.local:8443"));
+        assert!(domain_matches("*.internal.net:9000", "svc.internal.net:9000"));
+        assert!(!domain_matches("*.internal.net:9000", "svc.internal.net:9001"));
 
         assert!(domain_matches("*", "google.com"));
         assert!(!domain_matches("", "google.com"));

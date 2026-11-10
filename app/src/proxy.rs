@@ -1411,3 +1411,55 @@ fn reason(status: u16) -> &'static str {
 fn escape_json(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ")
 }
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+
+    #[test]
+    fn default_config_is_safe_passthrough() {
+        let cfg = ProxyConfig::default();
+        assert!(cfg.ssl_proxying_enabled);
+        assert!(cfg.ssl_allowlist.is_empty());
+        // Safe Default Invariant: Empty allowlist must NEVER intercept!
+        assert!(!cfg.should_intercept("google.com"));
+        assert!(!cfg.should_intercept("apple.com"));
+        assert!(!cfg.should_intercept("api.github.com"));
+    }
+
+    #[test]
+    fn selective_interception_only_matches_allowlist() {
+        let mut cfg = ProxyConfig::default();
+        cfg.ssl_allowlist = vec!["*.myapi.com".into(), "api.dev.local:8443".into()];
+
+        // Whitelisted targets
+        assert!(cfg.should_intercept("api.myapi.com"));
+        assert!(cfg.should_intercept("v1.users.myapi.com"));
+        assert!(cfg.should_intercept("myapi.com"));
+        assert!(cfg.should_intercept("api.dev.local:8443"));
+
+        // Unlisted targets MUST pass through (no TLS MITM)
+        assert!(!cfg.should_intercept("google.com"));
+        assert!(!cfg.should_intercept("safebrowsing.googleapis.com"));
+        assert!(!cfg.should_intercept("notmyapi.com"));
+    }
+
+    #[test]
+    fn disabled_ssl_proxying_passes_everything() {
+        let mut cfg = ProxyConfig::default();
+        cfg.ssl_proxying_enabled = false;
+        cfg.ssl_allowlist = vec!["*".into()];
+        assert!(!cfg.should_intercept("anything.com"));
+    }
+
+    #[test]
+    fn wildcard_and_port_interception() {
+        let mut cfg = ProxyConfig::default();
+        cfg.ssl_allowlist = vec!["*.shopwave.dev".into(), "127.0.0.1:3000".into()];
+        assert!(cfg.should_intercept("api.shopwave.dev:443"));
+        assert!(cfg.should_intercept("auth.shopwave.dev"));
+        assert!(cfg.should_intercept("127.0.0.1:3000"));
+        assert!(!cfg.should_intercept("127.0.0.1:8080"));
+        assert!(!cfg.should_intercept("google.com:443"));
+    }
+}

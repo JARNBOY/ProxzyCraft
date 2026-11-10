@@ -2407,6 +2407,8 @@ impl App {
                         |ui| {
                             ui.set_width(right);
                             self.live_cert_card(ui, ctx, &mut do_sim, &mut do_android, &mut do_folder, &mut do_cert);
+                            ui.add_space(14.0);
+                            self.live_ssl_allowlist_card(ui, ctx);
                         },
                     );
                 });
@@ -2464,6 +2466,9 @@ impl App {
             self.view = View::Traffic;
             self.filter = TrafficFilter::All;
         }
+        if self.mac_proxy_confirm_open {
+            self.mac_proxy_confirm_modal(ctx, &mut do_mac_proxy);
+        }
     }
 
     fn live_setup_card(
@@ -2473,7 +2478,7 @@ impl App {
         do_sim: &mut bool,
         do_setup_sim: &mut bool,
         do_reboot: &mut bool,
-        do_mac_proxy: &mut bool,
+        _do_mac_proxy: &mut bool,
         do_mac_clear: &mut bool,
         do_android: &mut bool,
         do_android_proxy: &mut bool,
@@ -2748,7 +2753,7 @@ impl App {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if primary_button(ui, "Set Mac proxy").clicked() {
-                            *do_mac_proxy = true;
+                            self.mac_proxy_confirm_open = true;
                         }
                         if secondary_button(ui, "Clear Mac proxy").clicked() {
                             *do_mac_clear = true;
@@ -2878,6 +2883,162 @@ impl App {
                     .color(FAINT),
             );
         });
+    }
+
+    fn live_ssl_allowlist_card(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                section_label(ui, "SSL Proxying & Safe Mode");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if self.ssl_allowlist.is_empty() {
+                        pill(
+                            ui,
+                            "SAFE MODE: 100% PASSTHROUGH",
+                            GREEN,
+                            Color32::from_rgba_unmultiplied(61, 214, 149, 18),
+                        );
+                    } else {
+                        pill(
+                            ui,
+                            &format!("SELECTIVE: {} ACTIVE", self.ssl_allowlist.len()),
+                            CYAN,
+                            Color32::from_rgba_unmultiplied(77, 208, 225, 18),
+                        );
+                    }
+                });
+            });
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Only matching domains have TLS intercepted & decrypted. All unlisted domains pass through securely without TLS tampering, preventing browser security warnings.")
+                    .size(9.5)
+                    .color(MUTED),
+            );
+            ui.add_space(8.0);
+
+            ui.horizontal(|ui| {
+                if ui.checkbox(&mut self.ssl_proxying_enabled, "Enable Selective SSL Interception").changed() {
+                    self.sync_proxy_config();
+                }
+            });
+            ui.add_space(8.0);
+
+            // Add Domain Form
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Domain:").size(10.0).color(FAINT));
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.new_ssl_domain)
+                        .hint_text("e.g. *.myapi.com, api.github.com")
+                        .desired_width(180.0),
+                );
+                let can_add = !self.new_ssl_domain.trim().is_empty();
+                if ui.add_enabled(can_add, egui::Button::new("Add Domain")).clicked()
+                    || (can_add && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                {
+                    let domain = self.new_ssl_domain.trim().to_lowercase();
+                    if !self.ssl_allowlist.contains(&domain) {
+                        self.ssl_allowlist.push(domain);
+                        self.sync_proxy_config();
+                        self.toast_now(ctx, "Domain added to SSL allowlist");
+                    }
+                    self.new_ssl_domain.clear();
+                }
+                if secondary_button(ui, "Sample API").clicked() {
+                    if !self.ssl_allowlist.contains(&"*.shopwave.dev".to_string()) {
+                        self.ssl_allowlist.push("*.shopwave.dev".to_string());
+                        self.sync_proxy_config();
+                    }
+                }
+            });
+            ui.add_space(8.0);
+
+            // List of domains
+            if self.ssl_allowlist.is_empty() {
+                Frame::none()
+                    .fill(INPUT)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .rounding(7.0)
+                    .inner_margin(Margin::symmetric(10.0, 8.0))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            dot(ui, GREEN, 6.0);
+                            ui.label(
+                                RichText::new("Empty allowlist = All HTTPS passes through untouched. Your host browsers (Chrome/Safari) are 100% safe from SSL blocks.")
+                                    .size(9.5)
+                                    .color(MUTED),
+                            );
+                        });
+                    });
+            } else {
+                let mut to_remove = None;
+                for (idx, domain) in self.ssl_allowlist.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        dot(ui, CYAN, 6.0);
+                        ui.label(RichText::new(domain).font(mono(10.0)).color(TEXT));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.small_button("✕").on_hover_text("Remove domain").clicked() {
+                                to_remove = Some(idx);
+                            }
+                        });
+                    });
+                }
+                if let Some(idx) = to_remove {
+                    self.ssl_allowlist.remove(idx);
+                    self.sync_proxy_config();
+                    self.toast_now(ctx, "Domain removed");
+                }
+            }
+        });
+    }
+
+    fn mac_proxy_confirm_modal(&mut self, ctx: &egui::Context, do_mac_proxy: &mut bool) {
+        egui::Area::new(Id::new("mac_dim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(egui::Pos2::ZERO)
+            .show(ctx, |ui| {
+                let rect = ctx.screen_rect();
+                ui.painter().rect_filled(
+                    rect,
+                    0.0,
+                    Color32::from_rgba_unmultiplied(4, 6, 10, 180),
+                );
+            });
+
+        let size = Vec2::new(440.0, 220.0);
+        let rect = Rect::from_center_size(ctx.screen_rect().center(), size);
+        egui::Area::new(Id::new("mac_modal"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .show(ctx, |ui| {
+                Frame::none()
+                    .fill(PANEL)
+                    .stroke(Stroke::new(1.0, AMBER))
+                    .rounding(12.0)
+                    .inner_margin(Margin::same(18.0))
+                    .show(ui, |ui| {
+                        ui.set_width(404.0);
+                        ui.horizontal(|ui| {
+                            dot(ui, AMBER, 8.0);
+                            ui.label(RichText::new("Confirm System-wide Mac Proxy").size(14.0).strong().color(TEXT));
+                        });
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new("Setting the Mac proxy changes networksetup on every active network interface. With Selective Passthrough, unlisted sites will not trigger certificate errors, but we still advise testing with curl -x or iOS Simulator for zero-risk isolation.")
+                                .size(10.5)
+                                .color(MUTED),
+                        );
+                        ui.add_space(14.0);
+                        ui.horizontal(|ui| {
+                            if primary_button(ui, "Proceed & Set Proxy").clicked() {
+                                self.mac_proxy_confirm_open = false;
+                                *do_mac_proxy = true;
+                            }
+                            if secondary_button(ui, "Cancel").clicked() {
+                                self.mac_proxy_confirm_open = false;
+                            }
+                        });
+                    });
+            });
     }
 
     fn device_prompt_modal(&mut self, ctx: &egui::Context) {

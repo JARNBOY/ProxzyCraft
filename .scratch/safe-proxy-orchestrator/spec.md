@@ -65,9 +65,9 @@ We adopt the industry-proven architecture used by **Proxyman** and **mitmproxy**
 
 | Ticket ID | Title | Blocked By | Status |
 | :--- | :--- | :--- | :--- |
-| `01` | [Domain Allowlist & Matching Data Model](issues/01-domain-allowlist-model.md) | None (Initial Frontier) | Open |
-| `02` | [Blind TCP Passthrough Engine](issues/02-blind-tcp-passthrough.md) | `01` | Blocked |
-| `03` | [Selective MITM Dispatch Pipeline](issues/03-selective-mitm-dispatch.md) | `01`, `02` | Blocked |
-| `04` | [UI Allowlist Manager & Safe Mode Controls](issues/04-ui-allowlist-manager.md) | `01` | Blocked |
-| `05` | [Verification & Safety Test Suite](issues/05-verification-test-suite.md) | `03`, `04` | Blocked |
+| `01` | [Domain Allowlist & Matching Data Model](issues/01-domain-allowlist-model.md) | None | Resolved |
+| `02` | [Blind TCP Passthrough Engine](issues/02-blind-tcp-passthrough.md) | `01` | Resolved |
+| `03` | [Selective MITM Dispatch Pipeline](issues/03-selective-mitm-dispatch.md) | `01`, `02` | Resolved |
+| `04` | [UI Allowlist Manager & Safe Mode Controls](issues/04-ui-allowlist-manager.md) | `01` | Resolved |
+| `05` | [Verification & Safety Test Suite](issues/05-verification-test-suite.md) | `03`, `04` | Resolved |
 
