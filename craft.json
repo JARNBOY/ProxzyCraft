@@ -10,7 +10,7 @@
   "status": "needs_you",
   "note": "OpenCode stopped: the service returned no error details",
   "created_ms": 1794210119144,
-  "updated_ms": 1794222177794,
+  "updated_ms": 1794287869983,
   "checks": [
     {
       "round": 1,
@@ -100,5 +100,5 @@
   "asset_budget_usd": 5.0,
   "generate_assets": false,
   "builder": "OpenCode",
-  "questions": "ask"
+  "questions": "decide"
 }

@@ -295,6 +295,10 @@ pub struct App {
     bp_test_url: String,
     new_ssl_domain: String,
     mac_proxy_confirm_open: bool,
+    /// True while Proxzy itself has pointed the macOS web proxy at this app.
+    /// The flag makes quitting safe: closing the window restores the network
+    /// instead of leaving the Mac with a proxy that no longer answers.
+    mac_proxy_on: bool,
     share_open: bool,
     toast: Option<Toast>,
     frames: u32,
@@ -321,6 +325,13 @@ pub struct App {
     device_prompt: Option<DevicePrompt>,
     last_device_scan: Option<Instant>,
     samples_auto_cleared: bool,
+    /// A leftover web proxy found at startup: it points at a local port that
+    /// no listener answers, which is what a crash or force-quit leaves.
+    stale_proxy: Option<Vec<WebProxyState>>,
+    stale_proxy_scan: Option<Receiver<Vec<WebProxyState>>>,
+    /// The person declined the one-click fix once; keep the quiet banner
+    /// instead of nagging with the modal on every frame.
+    stale_proxy_dismissed: bool,
 }
 
 impl App {
@@ -398,6 +409,7 @@ impl App {
             bp_test_url: String::new(),
             new_ssl_domain: String::new(),
             mac_proxy_confirm_open: false,
+            mac_proxy_on: false,
             share_open: false,
             toast: None,
             frames: 0,
@@ -430,9 +442,13 @@ impl App {
             last_device_scan: None,
             device_prompt: None,
             samples_auto_cleared: false,
+            stale_proxy: None,
+            stale_proxy_scan: None,
+            stale_proxy_dismissed: false,
         };
         app.sync_proxy_config();
         app.request_device_scan();
+        app.request_stale_proxy_scan();
         match std::env::var("PROXZY_DEMO").unwrap_or_default().as_str() {
             "map-edit" => {
                 let rule = app.map_rules.first().cloned();
@@ -449,6 +465,15 @@ impl App {
                 }
             }
             "share" => app.share_open = true,
+            "stale" => {
+                app.stale_proxy_scan = None;
+                app.stale_proxy = Some(vec![WebProxyState {
+                    service: "Wi-Fi".into(),
+                    enabled: true,
+                    host: "127.0.0.1".into(),
+                    port: 9091,
+                }]);
+            }
             "response" => {
                 app.view = View::Traffic;
                 app.inspector_tab = InspectorTab::Response;
@@ -463,6 +488,22 @@ impl App {
                 if app.captures.len() > 1 {
                     app.selected = 1;
                 }
+            }
+            "composer" => {
+                app.view = View::Composer;
+                let body = r#"{"data":{"cart":{"id":"cart_9f21","totalQuantity":3,"lines":[{"sku":"TEE-01","qty":2},{"sku":"MUG-04","qty":1}]}}}"#;
+                app.composer_response = Some(ComposerResponse {
+                    status: 200,
+                    latency_ms: 84,
+                    size: body.len() as u64,
+                    headers: vec![
+                        ("content-type".into(), "application/json".into()),
+                        ("x-request-id".into(), "req_7d1c9a".into()),
+                    ],
+                    body: body.into(),
+                    mocked: None,
+                    error: None,
+                });
             }
             _ => {}
         }
@@ -743,6 +784,9 @@ impl App {
             }
         }
         if changed > 0 {
+            // Remember that this app changed the Mac. Quitting then restores
+            // the network automatically (see the on_exit handler).
+            self.mac_proxy_on = !clear;
             self.log(
                 Level::Info,
                 "Proxy",
@@ -774,6 +818,27 @@ impl App {
             },
         );
         true
+    }
+
+    /// Put the macOS web proxy back to Direct before the window disappears.
+    /// Only touches the network when this app was the one that changed it, so
+    /// a person's own proxy settings are never overwritten by a plain quit.
+    fn restore_mac_proxy_for_exit(&mut self) -> bool {
+        if !self.mac_proxy_on {
+            return false;
+        }
+        let services = enabled_network_services();
+        let mut all_ok = !services.is_empty();
+        for service in &services {
+            let mut ok = true;
+            ok &= run_networksetup(&["-setwebproxystate", service, "off"]);
+            ok &= run_networksetup(&["-setsecurewebproxystate", service, "off"]);
+            all_ok &= ok;
+        }
+        if all_ok {
+            self.mac_proxy_on = false;
+        }
+        all_ok
     }
 
     /// One click for the common case: trust the local CA inside the booted
@@ -878,6 +943,117 @@ impl App {
         std::thread::spawn(move || {
             let _ = tx.send(devices::detect_all());
         });
+    }
+
+    /// Look once, right after launch, for a web proxy a previous run (or a
+    /// crash) left pointing at a dead local port. Reading `networksetup`
+    /// is safe; nothing is changed until the person confirms.
+    fn request_stale_proxy_scan(&mut self) {
+        if self.stale_proxy_scan.is_some() {
+            return;
+        }
+        let (tx, rx) = channel();
+        self.stale_proxy_scan = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(find_local_web_proxies());
+        });
+    }
+
+    fn poll_stale_proxy_scan(&mut self) {
+        let mut result = None;
+        if let Some(rx) = &self.stale_proxy_scan {
+            match rx.try_recv() {
+                Ok(value) => result = Some(value),
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => result = Some(Vec::new()),
+            }
+        }
+        if let Some(value) = result {
+            self.stale_proxy_scan = None;
+            let mut stale = Vec::new();
+            let mut adopted = false;
+            for state in value {
+                if state.port == self.proxy_port {
+                    // The Mac is already routed into this very session (for
+                    // example after a relaunch). Adopt the setting so quitting
+                    // restores the network instead of breaking the browser.
+                    adopted = true;
+                } else if !port_has_listener(state.port) {
+                    stale.push(state);
+                }
+            }
+            if adopted {
+                self.mac_proxy_on = true;
+                self.log(
+                    Level::Info,
+                    "Proxy",
+                    format!(
+                        "The macOS web proxy already points at Proxzy on 127.0.0.1:{}; it will be restored when you quit",
+                        self.proxy_port
+                    ),
+                );
+            }
+            if stale.is_empty() {
+                self.stale_proxy = None;
+            } else {
+                let ports: Vec<String> = stale
+                    .iter()
+                    .map(|s| format!("{}:{}", s.host, s.port))
+                    .collect();
+                self.log(
+                    Level::Warn,
+                    "Proxy",
+                    format!(
+                        "Found a leftover macOS web proxy pointing at {} with nothing listening. Browsers cannot reach the internet until it is cleared.",
+                        ports.join(", ")
+                    ),
+                );
+                self.stale_proxy = Some(stale);
+            }
+        }
+    }
+
+    /// Turn off the leftover web proxy on the services it was found on.
+    /// Runs only after the person presses the button in the banner.
+    fn clear_stale_proxy(&mut self, ctx: &egui::Context) {
+        let Some(states) = self.stale_proxy.clone() else {
+            return;
+        };
+        let mut cleared = 0usize;
+        let mut failed = Vec::new();
+        for state in &states {
+            let ok = run_networksetup(&["-setwebproxystate", &state.service, "off"])
+                & run_networksetup(&["-setsecurewebproxystate", &state.service, "off"]);
+            if ok {
+                cleared += 1;
+            } else {
+                failed.push(state.service.clone());
+            }
+        }
+        if cleared > 0 {
+            self.log(
+                Level::Info,
+                "Proxy",
+                format!("Cleared the leftover macOS web proxy on {cleared} service(s)"),
+            );
+        }
+        if !failed.is_empty() {
+            self.log(
+                Level::Error,
+                "Proxy",
+                format!(
+                    "macOS refused to clear the proxy for {}. Run: networksetup -setwebproxystate \"{}\" off",
+                    failed.join(", "),
+                    failed[0]
+                ),
+            );
+            self.toast_now(ctx, "Could not clear the leftover proxy; see Logs");
+            return;
+        }
+        self.stale_proxy = None;
+        self.stale_proxy_dismissed = false;
+        self.mac_proxy_on = false;
+        self.toast_now(ctx, "Leftover proxy cleared — the internet is back");
     }
 
     fn poll_device_scan(&mut self) {
@@ -2604,6 +2780,41 @@ impl App {
                         .size(10.0)
                         .color(FAINT),
                     );
+                    if self.mac_proxy_on {
+                        ui.label(RichText::new("·").size(10.0).color(FAINT));
+                        dot(ui, AMBER, 6.0);
+                        ui.label(
+                            RichText::new("Mac proxy on · restored when Proxzy quits")
+                                .size(10.0)
+                                .color(AMBER),
+                        );
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Restore now").size(10.0).color(AMBER),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text(
+                                "Point the macOS web proxy back at Direct without quitting",
+                            )
+                            .clicked()
+                        {
+                            if self.restore_mac_proxy_for_exit() {
+                                self.log(
+                                    Level::Info,
+                                    "Proxy",
+                                    "Restored the macOS web proxy from the status bar",
+                                );
+                                self.toast_now(ctx, "macOS web proxy turned off");
+                            } else {
+                                self.toast_now(
+                                    ctx,
+                                    "Could not restore the proxy; use Clear Mac proxy on Live Capture",
+                                );
+                            }
+                        }
+                    }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
                             RichText::new("Rust + egui POC")
@@ -3411,42 +3622,7 @@ impl App {
         if c.resp_body.is_empty() {
             empty_body(ui, "Empty response body");
         } else {
-            let (shown, view, note) = match self.response_format {
-                ResponseFormat::Json => match json_pretty(&c.resp_body) {
-                    Some(pretty) => (pretty, BodyView::Json, None),
-                    None => (
-                        c.resp_body.clone(),
-                        BodyView::Raw,
-                        Some("This body is not a JSON object or array; showing it unchanged."),
-                    ),
-                },
-                ResponseFormat::Raw => (c.resp_body.clone(), BodyView::Raw, None),
-                ResponseFormat::Xml => match markup_pretty(&c.resp_body) {
-                    Some(pretty) => (pretty, BodyView::Markup, None),
-                    None => (
-                        c.resp_body.clone(),
-                        BodyView::Raw,
-                        Some("No XML markup was found; showing the body unchanged."),
-                    ),
-                },
-                ResponseFormat::Html => match markup_pretty(&c.resp_body) {
-                    Some(pretty) => (pretty, BodyView::Markup, None),
-                    None => (
-                        c.resp_body.clone(),
-                        BodyView::Raw,
-                        Some("No HTML markup was found; showing the body unchanged."),
-                    ),
-                },
-            };
-            if let Some(note) = note {
-                ui.label(RichText::new(note).size(10.0).color(AMBER));
-                ui.add_space(4.0);
-            }
-            match view {
-                BodyView::Json => code_block(ui, &shown, 380.0, true),
-                BodyView::Markup => markup_code_block(ui, &shown, 380.0),
-                BodyView::Raw => code_block(ui, &shown, 380.0, false),
-            }
+            draw_formatted_body(ui, &c.resp_body, self.response_format, 380.0);
         }
         ui.add_space(10.0);
         if secondary_button(ui, "Copy response").clicked() {
@@ -3492,6 +3668,48 @@ impl App {
                 .size(10.0)
                 .color(FAINT),
         );
+    }
+}
+
+/// Render a response body in the chosen display format. JSON is re-indented by
+/// default; XML/HTML get markup highlighting; Raw stays byte-for-byte. When a
+/// format does not apply, the body is shown unchanged with a short amber note.
+fn draw_formatted_body(ui: &mut Ui, body: &str, format: ResponseFormat, max_height: f32) {
+    let (shown, view, note) = match format {
+        ResponseFormat::Json => match json_pretty(body) {
+            Some(pretty) => (pretty, BodyView::Json, None),
+            None => (
+                body.to_string(),
+                BodyView::Raw,
+                Some("This body is not a JSON object or array; showing it unchanged."),
+            ),
+        },
+        ResponseFormat::Raw => (body.to_string(), BodyView::Raw, None),
+        ResponseFormat::Xml => match markup_pretty(body) {
+            Some(pretty) => (pretty, BodyView::Markup, None),
+            None => (
+                body.to_string(),
+                BodyView::Raw,
+                Some("No XML markup was found; showing the body unchanged."),
+            ),
+        },
+        ResponseFormat::Html => match markup_pretty(body) {
+            Some(pretty) => (pretty, BodyView::Markup, None),
+            None => (
+                body.to_string(),
+                BodyView::Raw,
+                Some("No HTML markup was found; showing the body unchanged."),
+            ),
+        },
+    };
+    if let Some(note) = note {
+        ui.label(RichText::new(note).size(10.0).color(AMBER));
+        ui.add_space(4.0);
+    }
+    match view {
+        BodyView::Json => code_block(ui, &shown, max_height, true),
+        BodyView::Markup => markup_code_block(ui, &shown, max_height),
+        BodyView::Raw => code_block(ui, &shown, max_height, false),
     }
 }
 
@@ -4295,6 +4513,99 @@ fn run_networksetup(args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+/// What `networksetup -getwebproxy <service>` reports for one service.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebProxyState {
+    pub service: String,
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+}
+
+/// Parse the `networksetup -getwebproxy` block for one service.
+///
+/// ```text
+/// Enabled: No
+/// Server: 127.0.0.1
+/// Port: 9090
+/// Authenticated Proxy: No
+/// ```
+pub fn parse_web_proxy_block(service: &str, text: &str) -> WebProxyState {
+    let mut enabled = false;
+    let mut host = String::new();
+    let mut port = 0u16;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("Enabled:") {
+            enabled = rest.trim().eq_ignore_ascii_case("yes");
+        } else if let Some(rest) = line.strip_prefix("Server:") {
+            host = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("Port:") {
+            port = rest.trim().parse().unwrap_or(0);
+        }
+    }
+    WebProxyState {
+        service: service.to_string(),
+        enabled,
+        host,
+        port,
+    }
+}
+
+/// True when the web proxy points at this machine on a port that no
+/// listener owns. That is the leftover a crash leaves behind: the Mac
+/// keeps routing browsers through 127.0.0.1:<port> that nothing answers.
+pub fn proxy_is_stale(state: &WebProxyState) -> bool {
+    proxy_is_stale_with(state, port_has_listener)
+}
+
+/// Pure helper: evaluate whether a proxy configuration is stale given a listener check.
+pub fn proxy_is_stale_with(state: &WebProxyState, has_listener: impl Fn(u16) -> bool) -> bool {
+    state.enabled
+        && state.host == "127.0.0.1"
+        && state.port > 0
+        && !has_listener(state.port)
+}
+
+/// A TCP connect probe: a listener answers, a dead port refuses at once.
+pub fn port_has_listener(port: u16) -> bool {
+    std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+}
+
+/// Scan every enabled network service and report the ones whose web proxy
+/// points at one of Proxzy's own ports. Both cases matter at launch: a live
+/// port is an older Proxzy session whose setting we should adopt and restore
+/// on quit, while a dead port is the leftover that breaks the browser.
+pub fn find_local_web_proxies() -> Vec<WebProxyState> {
+    enabled_network_services()
+        .into_iter()
+        .filter_map(|service| {
+            let out = std::process::Command::new("networksetup")
+                .args(["-getwebproxy", &service])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            let state = parse_web_proxy_block(&service, &text);
+            let is_ours = state.enabled
+                && state.host == "127.0.0.1"
+                && (9090..=9093).contains(&state.port);
+            is_ours.then_some(state)
+        })
+        .collect()
+}
+
+/// Scan every enabled network service and report the ones whose web proxy
+/// points at a dead local port.
+pub fn find_stale_web_proxies() -> Vec<WebProxyState> {
+    find_local_web_proxies()
+        .into_iter()
+        .filter(|state| !port_has_listener(state.port))
+        .collect()
+}
+
 #[cfg(test)]
 mod helper_tests {
     use super::*;
@@ -4315,6 +4626,27 @@ mod helper_tests {
     }
 
     #[test]
+    fn parses_networksetup_web_proxy_block() {
+        let text = "Enabled: Yes\nServer: 127.0.0.1\nPort: 9091\nAuthenticated Proxy: No\n";
+        let state = parse_web_proxy_block("Wi-Fi", text);
+        assert!(state.enabled);
+        assert_eq!(state.host, "127.0.0.1");
+        assert_eq!(state.port, 9091);
+        assert_eq!(state.service, "Wi-Fi");
+    }
+
+    #[test]
+    fn disabled_proxy_is_never_stale() {
+        let state = WebProxyState {
+            service: "Wi-Fi".into(),
+            enabled: false,
+            host: "127.0.0.1".into(),
+            port: 1,
+        };
+        assert!(!proxy_is_stale(&state));
+    }
+
+    #[test]
     fn pinned_selection_stays_on_the_same_call() {
         let mut rows = sample_captures();
         let pinned_id = rows[2].id;
@@ -4326,6 +4658,119 @@ mod helper_tests {
         assert_eq!(rows[index].id, pinned_id);
         assert_eq!(resolve_selection(true, Some(pinned_id), &rows), 0);
         assert_eq!(resolve_selection(false, Some(12345), &rows), 0);
+    }
+
+    #[test]
+    fn parses_an_enabled_web_proxy_block() {
+        let text = "Enabled: Yes\nServer: 127.0.0.1\nPort: 9090\nAuthenticated Proxy: No\n";
+        let state = parse_web_proxy_block("Wi-Fi", text);
+        assert_eq!(
+            state,
+            WebProxyState {
+                service: "Wi-Fi".to_string(),
+                enabled: true,
+                host: "127.0.0.1".to_string(),
+                port: 9090,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_a_disabled_web_proxy_block() {
+        let text = "Enabled: No\nServer: 127.0.0.1\nPort: 9090\nAuthenticated Proxy: No\n";
+        let state = parse_web_proxy_block("Wi-Fi", text);
+        assert!(!state.enabled);
+        assert_eq!(state.host, "127.0.0.1");
+        assert_eq!(state.port, 9090);
+    }
+
+    #[test]
+    fn parses_garbage_as_a_disabled_empty_proxy() {
+        let state = parse_web_proxy_block("Wi-Fi", "not a networksetup block");
+        assert!(!state.enabled);
+        assert_eq!(state.host, "");
+        assert_eq!(state.port, 0);
+    }
+
+    #[test]
+    fn disabled_or_remote_proxies_are_never_stale() {
+        let disabled = WebProxyState {
+            service: "Wi-Fi".to_string(),
+            enabled: false,
+            host: "127.0.0.1".to_string(),
+            port: 9090,
+        };
+        assert!(!proxy_is_stale(&disabled));
+
+        let remote = WebProxyState {
+            service: "Wi-Fi".to_string(),
+            enabled: true,
+            host: "proxy.corp.example.com".to_string(),
+            port: 8080,
+        };
+        // A remote host is not ours to clear even when unreachable.
+        assert!(!proxy_is_stale(&remote));
+
+        let no_port = WebProxyState {
+            service: "Wi-Fi".to_string(),
+            enabled: true,
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        };
+        assert!(!proxy_is_stale(&no_port));
+    }
+
+    #[test]
+    fn a_live_listener_means_the_proxy_is_not_stale() {
+        let state = WebProxyState {
+            service: "Wi-Fi".to_string(),
+            enabled: true,
+            host: "127.0.0.1".to_string(),
+            port: 9090,
+        };
+        assert!(!proxy_is_stale_with(&state, |_port| true));
+
+        // When environment permissions allow loopback connections, verify end-to-end:
+        if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:0") {
+            if let Ok(addr) = listener.local_addr() {
+                if port_has_listener(addr.port()) {
+                    let live_state = WebProxyState {
+                        service: "Wi-Fi".to_string(),
+                        enabled: true,
+                        host: "127.0.0.1".to_string(),
+                        port: addr.port(),
+                    };
+                    assert!(!proxy_is_stale(&live_state));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_dead_local_port_means_the_proxy_is_stale() {
+        let state = WebProxyState {
+            service: "Wi-Fi".to_string(),
+            enabled: true,
+            host: "127.0.0.1".to_string(),
+            port: 9091,
+        };
+        assert!(proxy_is_stale_with(&state, |_port| false));
+
+        // Bind, note the port, then drop the listener: nothing answers there.
+        if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:0") {
+            if let Ok(addr) = listener.local_addr() {
+                let port = addr.port();
+                drop(listener);
+                let dead_state = WebProxyState {
+                    service: "Wi-Fi".to_string(),
+                    enabled: true,
+                    host: "127.0.0.1".to_string(),
+                    port,
+                };
+                assert!(!port_has_listener(port));
+                assert!(proxy_is_stale(&dead_state));
+            }
+        }
     }
 }
 

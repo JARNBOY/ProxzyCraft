@@ -43,6 +43,7 @@ PROXZY_DEMO=bp-edit cargo run
 PROXZY_DEMO=pause cargo run
 PROXZY_DEMO=share cargo run
 PROXZY_DEMO=connect cargo run
+PROXZY_DEMO=stale cargo run
 ```
 
 `PROXZY_DEMO=connect` opens the "Connect device" confirmation as soon as a
@@ -60,7 +61,7 @@ Combine the two to capture a page with its modal, for example
 | Inspector | Overview, Request, Response, Headers and cURL | Select a call, then switch tabs on the right. Response bodies switch between JSON (default), Raw, XML and HTML |
 | Copy & share | URL, full cURL, a local share link and Markdown | Buttons under the URL, or the cURL tab |
 | Repeat | Replays the selected call into a new capture (live HTTPS replays trust the local CA) | Select a call and press Repeat |
-| Composer | Writes and sends GraphQL or REST requests | Pick a preset or edit method, URL, headers and body, then Send |
+| Composer | Writes and sends GraphQL or REST requests | Pick a preset or edit method, URL, headers and body, then Send. Its response panel shares the same JSON (default), Raw, XML and HTML switch |
 | Map Local | Answers matching live or Composer requests with local JSON, status and delay | Add a rule, switch it on, use Send test or the Composer |
 | Breakpoints | Pauses a real live request and lets you edit, continue or abort it | Arm a rule, send traffic through the proxy, edit, Continue or Abort |
 | Log Dashboard | One timeline for captures, mocks, breakpoints and system events | Filter by Info / Warn / Error; copy the session summary |
@@ -107,7 +108,10 @@ build or a network security config.
 
 Press **Set Mac proxy** to point every enabled network service at Proxzy, or use
 the `curl -x http://127.0.0.1:<port>` command without changing system settings.
-Press **Clear Mac proxy** when you finish.
+While the Mac proxy is on, the status bar shows an amber **Mac proxy on** note
+with a **Restore now** button. Closing Proxzy restores the proxy automatically,
+so the browser does not keep showing "No internet" after the app quits. Press
+**Clear Mac proxy** on the Live Capture page to restore it by hand at any time.
 
 ## What is real and what is simulated
 

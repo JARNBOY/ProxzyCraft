@@ -453,12 +453,29 @@ impl App {
                         });
                 }
                 ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    section_label(ui, "Response body");
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        for format in [
+                            ResponseFormat::Html,
+                            ResponseFormat::Xml,
+                            ResponseFormat::Raw,
+                            ResponseFormat::Json,
+                        ] {
+                            if chip(ui, format.label(), self.response_format == format)
+                                .on_hover_text(format.hint())
+                                .clicked()
+                            {
+                                self.response_format = format;
+                            }
+                        }
+                    });
+                });
+                ui.add_space(5.0);
                 if resp.body.is_empty() {
                     empty_body(ui, "Empty response body");
                 } else {
-                    let is_json = resp.body.trim_start().starts_with('{')
-                        || resp.body.trim_start().starts_with('[');
-                    code_block(ui, &resp.body, 250.0, is_json);
+                    draw_formatted_body(ui, &resp.body, self.response_format, 250.0);
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -2822,7 +2839,7 @@ impl App {
                     });
                     ui.add_space(4.0);
                     ui.label(
-                        RichText::new("This changes the web proxy for every enabled network service. Turn it off when you finish debugging.")
+                        RichText::new("This changes the web proxy for every enabled network service. Proxzy restores it automatically when you quit; Clear Mac proxy does it now.")
                             .size(9.5)
                             .color(FAINT),
                     );
@@ -3050,6 +3067,108 @@ impl App {
                 }
             }
         });
+    }
+
+    /// A quiet warning bar shown while a leftover dead web proxy is detected.
+    /// It explains the browser outage the person is seeing and offers the
+    /// one-click fix; dismissing keeps a slim reminder in the status bar.
+    fn stale_proxy_banner(&mut self, ctx: &egui::Context) {
+        let states = match &self.stale_proxy {
+            Some(states) if !states.is_empty() => states.clone(),
+            _ => return,
+        };
+        if self.mac_proxy_on {
+            // This run set the proxy itself; the status bar already covers it.
+            return;
+        }
+        let ports: Vec<String> = states
+            .iter()
+            .map(|s| format!("{}:{}", s.host, s.port))
+            .collect();
+        let services: Vec<String> = states.iter().map(|s| s.service.clone()).collect();
+
+        if self.stale_proxy_dismissed {
+            // Slim reminder only.
+            egui::TopBottomPanel::bottom("stale_proxy_reminder")
+                .frame(
+                    Frame::none()
+                        .fill(Color32::from_rgba_unmultiplied(255, 159, 67, 20))
+                        .inner_margin(Margin::symmetric(14.0, 5.0)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        dot(ui, AMBER, 7.0);
+                        ui.label(
+                            RichText::new(format!(
+                                "Leftover proxy {} still set — browsers cannot reach the internet",
+                                ports.join(", ")
+                            ))
+                            .size(10.0)
+                            .color(AMBER),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Clear it now").size(10.0).color(AMBER),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
+                                self.clear_stale_proxy(ctx);
+                            }
+                        });
+                    });
+                });
+            return;
+        }
+
+        // Full modal: this is the "no internet" the person is looking at.
+        egui::TopBottomPanel::top("stale_proxy_banner")
+            .frame(
+                Frame::none()
+                    .fill(Color32::from_rgba_unmultiplied(255, 159, 67, 26))
+                    .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 159, 67, 70)))
+                    .inner_margin(Margin::symmetric(16.0, 10.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    dot(ui, AMBER, 9.0);
+                    ui.label(
+                        RichText::new("A leftover proxy is blocking the internet")
+                            .size(13.0)
+                            .strong()
+                            .color(TEXT),
+                    );
+                });
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!(
+                        "A previous Proxzy run left the macOS web proxy pointing at {}, where nothing is listening. Browsers show ERR_PROXY_CONNECTION_FAILED until it is cleared (services: {}).",
+                        ports.join(", "),
+                        services.join(", ")
+                    ))
+                    .size(10.5)
+                    .color(MUTED),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if primary_button(ui, "Clear leftover proxy").clicked() {
+                        self.clear_stale_proxy(ctx);
+                    }
+                    if secondary_button(ui, "Not now").clicked() {
+                        self.stale_proxy_dismissed = true;
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(
+                            RichText::new("Manual: networksetup -setwebproxystate \"Wi-Fi\" off")
+                                .size(9.0)
+                                .color(FAINT),
+                        );
+                    });
+                });
+            });
     }
 
     fn mac_proxy_confirm_modal(&mut self, ctx: &egui::Context, do_mac_proxy: &mut bool) {
@@ -3620,6 +3739,14 @@ fn top_hosts(ui: &mut Ui, captures: &[Capture]) {
 }
 
 impl eframe::App for App {
+    /// Closing the window must never leave the Mac pointing at a proxy that
+    /// has already stopped. If Proxzy set the web proxy, put it back to Direct.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if self.restore_mac_proxy_for_exit() {
+            eprintln!("Proxzy: restored the macOS web proxy before exiting");
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.screenshot_tick(ctx);
         self.poll_send(ctx);
@@ -3627,6 +3754,7 @@ impl eframe::App for App {
         self.poll_proxy_test();
         self.poll_sim_reboot(ctx);
         self.poll_device_scan();
+        self.poll_stale_proxy_scan();
         self.maybe_scan_devices();
         if self.device_scanning() {
             ctx.request_repaint_after(Duration::from_millis(150));
@@ -3635,6 +3763,7 @@ impl eframe::App for App {
             self.selected = 0;
         }
         self.top_bar(ctx);
+        self.stale_proxy_banner(ctx);
         self.status_bar(ctx);
 
         egui::SidePanel::left("rail")
