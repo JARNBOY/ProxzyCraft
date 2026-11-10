@@ -2166,12 +2166,12 @@
 04:36:28 done  shell: tesseract not found ocrmypdf not found safe-proxy-orchestrator security_audit_static.md
 04:36:36 said  No tesseract. macOS has built-in Vision OCR via Swift — let me try that on pictures 4-6:
 04:36:36 start shell
-04:36:36 done  shell: Clear history TYPE • REST pubmatic Newest first click a row to inspect TIME SIZE 481 ms 411 B 2 Map Local • 1 Breakpoints • Live • ? PX GET 200 OK 10:40:20 524 ms https://sfvon.stm.trueid.net/none/SFV
+04:36:36 done  shell: Clear history TYPE • REST pubmatic Newest first click a row to inspect TIME SIZE 481 ms 411 B 2 Map Local • 1 Breakpoints • Live • ? PX GET 200 OK 10:40:20 524 ms https://api.sample.com/none/SFV
 04:36:41 said  Vision OCR works. Picture 4 shows a media request with Copy URL/CURL/Share/Pin/Repeat/Mock this/Catch this buttons. Let me OCR pictures 5 and 6:
 04:36:41 start shell
 04:36:41 done  shell: rk Inspector Recording Clear All Traffic 1 of 170 requests • live capture All Live Pinned REST GraphQL Errors Mocked METHOD STATUS REQUEST GET • 200 ow.pubmatic.com/video/json?app.bundle=1013814221&ap
 04:36:41 start shell
-04:36:41 done  shell: console.firebase.google.com/project/trueid-v3-preprod/overview?pli=1 leDigital site No internet There is something wrong with the proxy server, or the address is incorrect. Try: • Contacting the syste
+04:36:41 done  shell: console.firebase.google.com/project/sample-v3-preprod/overview?pli=1 leDigital site No internet There is something wrong with the proxy server, or the address is incorrect. Try: • Contacting the syste
 04:36:51 said  Picture 5 shows our app in use with live capture, and picture 6 is critical — it shows a browser failing with `ERR_PROXY_CONNECTION_FAILED`, exactly the safety pain point the person mentions ("safe ProxzyCraft"). Let me check how the app handles the macOS system proxy:
 04:36:51 start shell
 04:36:51 done  shell: app/src/views.rs:1724: "xcrun simctl keychain <UDID> add-root-cert \"{}\"\nnetworksetup -setwebproxy Wi-Fi 127.0.0.1 {}\nnetworksetup -setsecurewebproxy Wi-F
@@ -2286,7 +2286,7 @@
 04:42:41 start shell
 04:42:41 done  shell: rk Inspector Recording Clear All Traffic 1 of 170 requests • live capture All Live Pinned REST GraphQL Errors Mocked METHOD STATUS REQUEST GET • 200 ow.pubmatic.com/video/json?app.bundle=1013814221&ap
 04:42:41 start shell
-04:42:41 done  shell: console.firebase.google.com/project/trueid-v3-preprod/overview?pli=1 leDigital site No internet There is something wrong with the proxy server, or the address is incorrect. Try: • Contacting the syste
+04:42:41 done  shell: console.firebase.google.com/project/sample-v3-preprod/overview?pli=1 leDigital site No internet There is something wrong with the proxy server, or the address is incorrect. Try: • Contacting the syste
 04:42:41 said  The MCP tools for craft-anything are no longer available after the restart, so I'll complete the recheck with the local tools. One critical safety item to verify: does the app restore the macOS system proxy when it exits? Picture 6 shows exactly the failure (browser with ERR_PROXY_CONNECTION_FAILED) when the proxy is set but not running.
 04:42:41 start shell
 04:42:41 done  shell: app/src/proxy.rs:166:impl Drop for ProxyHandle {

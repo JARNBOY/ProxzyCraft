@@ -125,6 +125,7 @@ struct ComposerResponse {
 struct MapEditor {
     id: Option<u64>,
     name: String,
+    folder: String,
     pattern: String,
     method: RuleMethod,
     status: String,
@@ -286,6 +287,8 @@ pub struct App {
     map_enabled: bool,
     catch_enabled: bool,
     map_filter: String,
+    map_selected_folder: Option<String>,
+    map_folder_collapsed: std::collections::HashSet<String>,
     map_test_url: String,
     quick_mock_url: String,
     quick_mock_method: RuleMethod,
@@ -400,6 +403,8 @@ impl App {
             map_enabled: false,
             catch_enabled: false,
             map_filter: String::new(),
+            map_selected_folder: None,
+            map_folder_collapsed: std::collections::HashSet::new(),
             map_test_url: String::new(),
             quick_mock_url: String::new(),
             quick_mock_method: RuleMethod::Any,
@@ -520,6 +525,8 @@ impl App {
                 breakpoints: self.breakpoints.clone(),
                 ssl_proxying_enabled: self.ssl_proxying_enabled,
                 ssl_allowlist: self.ssl_allowlist.clone(),
+                auto_record: false,
+                auto_record_domains: Vec::new(),
             });
         }
     }
@@ -1646,12 +1653,13 @@ impl App {
             .unwrap_or("endpoint");
         let name = format!("Mock {}", leaf);
         let method = rule_method_for(&self.composer_method);
-        let (status, body) = match &self.composer_response {
+        let (status, raw_body) = match &self.composer_response {
             Some(resp) if resp.status > 0 && !resp.body.is_empty() => {
                 (resp.status, resp.body.clone())
             }
             _ => (200, MockScenario::Success.default_body()),
         };
+        let body = sanitize_mock_payload(&raw_body);
         let scenario = if status >= 400 {
             MockScenario::Error
         } else {
@@ -1667,10 +1675,19 @@ impl App {
             })
             .unwrap_or_default();
 
+        let folder = if let Some(active_f) = &self.map_selected_folder {
+            active_f.clone()
+        } else if let Some(domain) = extract_domain_from_pattern(&pattern) {
+            domain
+        } else {
+            "General".to_string()
+        };
+
         let id = self.map_rules.iter().map(|r| r.id).max().unwrap_or(0) + 1;
         let mut rule = MapRule {
             id,
             name: name.clone(),
+            folder,
             pattern: pattern.clone(),
             method,
             status,
@@ -1681,6 +1698,7 @@ impl App {
             enabled: true,
             hits: 0,
             active_scenario: scenario,
+            empty_body: auto_derive_empty_scenario(&body),
             ..MapRule::default()
         };
         match scenario {
@@ -1755,10 +1773,19 @@ impl App {
             self.quick_mock_body.clone()
         };
 
+        let folder = if let Some(active_f) = &self.map_selected_folder {
+            active_f.clone()
+        } else if let Some(domain) = extract_domain_from_pattern(&pattern) {
+            domain
+        } else {
+            "General".to_string()
+        };
+
         let id = self.map_rules.iter().map(|r| r.id).max().unwrap_or(0) + 1;
         let mut rule = MapRule {
             id,
             name: name.clone(),
+            folder,
             pattern: pattern.clone(),
             method,
             status,
@@ -1812,26 +1839,31 @@ impl App {
     }
 
     fn open_map_editor(&mut self, rule: Option<MapRule>) {
+        let default_folder = self.map_selected_folder.clone().unwrap_or_else(|| "General".into());
         self.map_editor = Some(match rule {
-            Some(r) => MapEditor {
-                id: Some(r.id),
-                name: r.name,
-                pattern: r.pattern,
-                method: r.method,
-                status: r.status.to_string(),
-                content_type: r.content_type,
-                delay: r.delay_ms.to_string(),
-                body: r.body,
-                graphql_name: r.graphql_name,
-                enabled: r.enabled,
-                active_scenario: r.active_scenario,
-                success_status: r.success_status.to_string(),
-                success_body: r.success_body,
-                error_status: r.error_status.to_string(),
-                error_body: r.error_body,
-                empty_status: r.empty_status.to_string(),
-                empty_body: r.empty_body,
-                curl_paste: String::new(),
+            Some(r) => {
+                let folder = r.folder_name().to_string();
+                MapEditor {
+                    id: Some(r.id),
+                    name: r.name,
+                    folder,
+                    pattern: r.pattern,
+                    method: r.method,
+                    status: r.status.to_string(),
+                    content_type: r.content_type,
+                    delay: r.delay_ms.to_string(),
+                    body: r.body,
+                    graphql_name: r.graphql_name,
+                    enabled: r.enabled,
+                    active_scenario: r.active_scenario,
+                    success_status: r.success_status.to_string(),
+                    success_body: r.success_body,
+                    error_status: r.error_status.to_string(),
+                    error_body: r.error_body,
+                    empty_status: r.empty_status.to_string(),
+                    empty_body: r.empty_body,
+                    curl_paste: String::new(),
+                }
             },
             None => {
                 let default_rule = MapRule::default();
@@ -1845,6 +1877,7 @@ impl App {
                 MapEditor {
                     id: None,
                     name: "Local fixture".into(),
+                    folder: default_folder,
                     pattern: "*/v1/products?*".into(),
                     method: RuleMethod::Get,
                     status: "200".into(),
@@ -1923,9 +1956,21 @@ impl App {
             return;
         }
         ed.sync_current_to_slot();
+        let folder = if ed.folder.trim().is_empty() {
+            if let Some(active_f) = &self.map_selected_folder {
+                active_f.clone()
+            } else if let Some(domain) = extract_domain_from_pattern(&ed.pattern) {
+                domain
+            } else {
+                "General".to_string()
+            }
+        } else {
+            ed.folder.trim().to_string()
+        };
         let rule = MapRule {
             id: ed.id.unwrap_or(0),
             name: ed.name.trim().to_string(),
+            folder,
             pattern: ed.pattern.trim().to_string(),
             method: ed.method,
             status: ed.status.trim().parse::<u16>().unwrap_or(200),
@@ -1946,6 +1991,7 @@ impl App {
             error_body: ed.error_body,
             empty_status: ed.empty_status.trim().parse::<u16>().unwrap_or(200),
             empty_body: ed.empty_body,
+            ..MapRule::default()
         };
         let _ = self.ensure_ssl_domain_for_pattern(&rule.pattern);
         if let Some(id) = ed.id {

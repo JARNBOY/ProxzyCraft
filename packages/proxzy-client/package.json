@@ -1,0 +1,39 @@
+{
+  "name": "@proxzy/client",
+  "version": "0.1.0",
+  "description": "Universal TypeScript client for ProxzyCraft HTTP/HTTPS MITM proxy & WireMock-like E2E test engine",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "proxzy",
+    "proxyman",
+    "wiremock",
+    "mock",
+    "mitm",
+    "proxy",
+    "mobilewright",
+    "playwright",
+    "e2e",
+    "testing",
+    "mobile-mcp"
+  ],
+  "author": "ProxzyCraft Authors",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
+}

@@ -201,7 +201,35 @@ impl App {
         if do_quick_mock {
             self.add_quick_direct_mock(ctx);
         }
-        ui.add_space(10.0);
+        ui.add_space(8.0);
+
+        // ---- Module / Folder Filter Chips ----------------------------------
+        let mut all_folders: Vec<String> = self
+            .map_rules
+            .iter()
+            .map(|r| r.folder_name().to_string())
+            .collect();
+        all_folders.sort();
+        all_folders.dedup();
+
+        if !all_folders.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("MODULE:").size(9.5).color(FAINT).strong());
+                let all_active = self.map_selected_folder.is_none();
+                if chip(ui, &format!("All ({})", self.map_rules.len()), all_active).clicked() {
+                    self.map_selected_folder = None;
+                }
+                for f in &all_folders {
+                    let count = self.map_rules.iter().filter(|r| r.folder_name() == f).count();
+                    let is_active = self.map_selected_folder.as_deref() == Some(f.as_str());
+                    let label = format!("📁 {} ({})", f, count);
+                    if chip(ui, &label, is_active).clicked() {
+                        self.map_selected_folder = if is_active { None } else { Some(f.clone()) };
+                    }
+                }
+            });
+            ui.add_space(8.0);
+        }
 
         // ---- two panes: rules table + live tester --------------------------
         let total = ui.available_width();
@@ -211,6 +239,9 @@ impl App {
         let mut toggle_id: Option<u64> = None;
         let mut switch_scenario_action: Option<(u64, MockScenario)> = None;
         let mut copy_text_action: Option<(String, &'static str)> = None;
+        let mut toggle_collapse_folder: Option<String> = None;
+        let mut batch_folder_toggle: Option<(String, bool)> = None;
+        let mut batch_folder_scenario: Option<(String, MockScenario)> = None;
 
         ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -226,10 +257,16 @@ impl App {
                                 .map_rules
                                 .iter()
                                 .filter(|r| {
+                                    if let Some(ref sel_f) = self.map_selected_folder {
+                                        if r.folder_name() != sel_f {
+                                            return false;
+                                        }
+                                    }
                                     q.is_empty()
                                         || r.name.to_lowercase().contains(&q)
                                         || r.pattern.to_lowercase().contains(&q)
                                         || r.graphql_name.to_lowercase().contains(&q)
+                                        || r.folder_name().to_lowercase().contains(&q)
                                 })
                                 .cloned()
                                 .collect();
@@ -255,8 +292,92 @@ impl App {
                                     });
                             }
 
-                            for rule in &rules {
-                                let live = self.map_match_count(rule);
+                            let mut displayed_folders: Vec<String> = rules
+                                .iter()
+                                .map(|r| r.folder_name().to_string())
+                                .collect();
+                            displayed_folders.sort();
+                            displayed_folders.dedup();
+
+                            for folder in &displayed_folders {
+                                let folder_rules: Vec<&MapRule> = rules
+                                    .iter()
+                                    .filter(|r| r.folder_name() == folder)
+                                    .collect();
+                                let is_collapsed = self.map_folder_collapsed.contains(folder);
+
+                                Frame::none()
+                                    .fill(Color32::from_rgb(26, 26, 30))
+                                    .stroke(Stroke::new(1.0, BORDER))
+                                    .rounding(8.0)
+                                    .inner_margin(Margin::symmetric(10.0, 7.0))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            let arrow = if is_collapsed { "▶" } else { "▼" };
+                                            if ui
+                                                .button(
+                                                    RichText::new(format!("{} 📁", arrow))
+                                                        .size(11.0)
+                                                        .color(AMBER),
+                                                )
+                                                .clicked()
+                                            {
+                                                toggle_collapse_folder = Some(folder.clone());
+                                            }
+                                            let title_lbl = ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(folder)
+                                                        .size(13.0)
+                                                        .strong()
+                                                        .color(TEXT),
+                                                )
+                                                .sense(Sense::click()),
+                                            );
+                                            if title_lbl.clicked() {
+                                                toggle_collapse_folder = Some(folder.clone());
+                                            }
+                                            pill(
+                                                ui,
+                                                &format!("{} rules", folder_rules.len()),
+                                                Color32::from_rgb(140, 175, 230),
+                                                Color32::from_rgba_unmultiplied(80, 120, 200, 22),
+                                            );
+
+                                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                                let all_enabled = folder_rules.iter().all(|r| r.enabled);
+                                                if toggle(ui, all_enabled).clicked() {
+                                                    batch_folder_toggle = Some((folder.clone(), !all_enabled));
+                                                }
+                                                ui.label(
+                                                    RichText::new(if all_enabled { "All on" } else { "All off" })
+                                                        .size(9.5)
+                                                        .color(if all_enabled { GREEN } else { FAINT }),
+                                                );
+
+                                                ui.add_space(8.0);
+                                                for sc in [
+                                                    MockScenario::Empty,
+                                                    MockScenario::Error,
+                                                    MockScenario::Success,
+                                                ] {
+                                                    if chip(ui, sc.label(), false).clicked() {
+                                                        batch_folder_scenario = Some((folder.clone(), sc));
+                                                    }
+                                                }
+                                                ui.label(
+                                                    RichText::new("Batch:")
+                                                        .size(9.0)
+                                                        .color(FAINT)
+                                                        .strong(),
+                                                );
+                                            });
+                                        });
+                                    });
+                                ui.add_space(4.0);
+
+                                if !is_collapsed {
+                                    for rule in &folder_rules {
+                                        let live = self.map_match_count(rule);
                                 Frame::none()
                                     .fill(if rule.enabled { CARD } else { PANEL })
                                     .stroke(Stroke::new(
@@ -293,7 +414,7 @@ impl App {
                                                             .sense(Sense::click()),
                                                         );
                                                         if name.clicked() {
-                                                            edit_existing = Some(rule.clone());
+                                                            edit_existing = Some((*rule).clone());
                                                         }
                                                         if !rule.graphql_name.is_empty() {
                                                             pill(
@@ -302,6 +423,16 @@ impl App {
                                                                 PURPLE,
                                                                 Color32::from_rgba_unmultiplied(
                                                                     184, 140, 255, 22,
+                                                                ),
+                                                            );
+                                                        }
+                                                        if !rule.inject_props.is_empty() {
+                                                            pill(
+                                                                ui,
+                                                                &format!("INJECTED ({})", rule.inject_props.len()),
+                                                                AMBER,
+                                                                Color32::from_rgba_unmultiplied(
+                                                                    255, 181, 84, 25,
                                                                 ),
                                                             );
                                                         }
@@ -317,7 +448,7 @@ impl App {
                                                 Layout::right_to_left(Align::Center),
                                                 |ui| {
                                                     if secondary_button(ui, "Edit").clicked() {
-                                                        edit_existing = Some(rule.clone());
+                                                        edit_existing = Some((*rule).clone());
                                                     }
                                                     ui.label(
                                                         RichText::new(format!("{} hits", rule.hits))
@@ -400,6 +531,9 @@ impl App {
                                             );
                                         });
                                     });
+                                        ui.add_space(6.0);
+                                    }
+                                }
                                 ui.add_space(6.0);
                             }
 
@@ -683,6 +817,28 @@ impl App {
                     format!("Rule \"{}\" {}", name, if state { "enabled" } else { "disabled" }),
                 );
             }
+        }
+        if let Some(f) = toggle_collapse_folder {
+            if self.map_folder_collapsed.contains(&f) {
+                self.map_folder_collapsed.remove(&f);
+            } else {
+                self.map_folder_collapsed.insert(f);
+            }
+        }
+        if let Some((f, on)) = batch_folder_toggle {
+            for r in self.map_rules.iter_mut().filter(|r| r.folder_name() == f) {
+                r.enabled = on;
+            }
+            self.sync_proxy_config();
+        }
+        if let Some((f, sc)) = batch_folder_scenario {
+            for r in self.map_rules.iter_mut().filter(|r| r.folder_name() == f) {
+                r.switch_scenario(sc);
+                r.enabled = true;
+            }
+            self.map_enabled = true;
+            self.sync_proxy_config();
+            self.toast_now(ctx, &format!("Batch switched '{}' → {}", f, sc.label()));
         }
         if create_new {
             self.open_map_editor(None);
@@ -1329,6 +1485,35 @@ impl App {
                                     ui.add_space(4.0);
                                     ui.horizontal(|ui| {
                                         ui.vertical(|ui| {
+                                            ui.set_width(290.0);
+                                            form_label(ui, "Folder / Module");
+                                            input_frame().show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.add(
+                                                    egui::TextEdit::singleline(&mut ed.folder)
+                                                        .frame(false)
+                                                        .desired_width(f32::INFINITY)
+                                                        .hint_text("General")
+                                                        .text_color(TEXT),
+                                                );
+                                            });
+                                        });
+                                        ui.vertical(|ui| {
+                                            ui.set_width(380.0);
+                                            form_label(ui, "Quick Module Chips");
+                                            ui.horizontal(|ui| {
+                                                for mod_name in ["Auth", "Wallet", "Home", "Watch", "Profile", "General"] {
+                                                    let active = ed.folder.eq_ignore_ascii_case(mod_name);
+                                                    if chip(ui, mod_name, active).clicked() {
+                                                        ed.folder = mod_name.to_string();
+                                                    }
+                                                }
+                                            });
+                                        });
+                                    });
+                                    ui.add_space(6.0);
+                                    ui.horizontal(|ui| {
+                                        ui.vertical(|ui| {
                                             ui.set_width(470.0);
                                             form_label(ui, "Name");
                                             input_frame().show(ui, |ui| {
@@ -1398,6 +1583,9 @@ impl App {
                                         }
                                         if secondary_button(ui, "Clear").clicked() {
                                             ed.pattern.clear();
+                                        }
+                                        if secondary_button(ui, "Wildcard Remap (Prod/Preprod)").clicked() {
+                                            ed.pattern = make_environment_wildcard_pattern(&ed.pattern);
                                         }
                                     });
                                     ui.add_space(4.0);
@@ -1562,6 +1750,25 @@ impl App {
                                                 .font(mono(9.0))
                                                 .color(FAINT),
                                             );
+                                        });
+                                    });
+                                    ui.add_space(4.0);
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new("DYNAMIC INJECTIONS:").size(9.0).color(FAINT).strong());
+                                        for ph in ["{{USERNAME}}", "{{OTP}}", "{{TOKEN}}", "{{TIER}}"] {
+                                            if chip(ui, ph, false).clicked() {
+                                                ed.body.push_str(ph);
+                                            }
+                                        }
+                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                            if secondary_button(ui, "Auto-derive Empty").clicked() {
+                                                ed.empty_body = auto_derive_empty_scenario(&ed.body);
+                                                ed.empty_status = "200".to_string();
+                                            }
+                                            if secondary_button(ui, "Redact PII (Sanitize)").clicked() {
+                                                ed.body = sanitize_mock_payload(&ed.body);
+                                                ed.sync_current_to_slot();
+                                            }
                                         });
                                     });
                                     ui.add_space(4.0);

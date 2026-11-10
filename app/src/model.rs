@@ -1604,6 +1604,119 @@ pub fn extract_domain_from_pattern(pattern: &str) -> Option<String> {
     Some(cleaned.to_ascii_lowercase())
 }
 
+/// Sanitize sensitive PII and secrets (tokens, passwords, phone numbers, citizen IDs)
+/// from real response bodies, converting them into safe test template placeholders.
+pub fn sanitize_mock_payload(body: &str) -> String {
+    let sensitive_keys = [
+        ("access_token", "\"{{TOKEN}}\""),
+        ("refresh_token", "\"{{TOKEN}}\""),
+        ("token", "\"{{TOKEN}}\""),
+        ("password", "\"{{PASSWORD}}\""),
+        ("secret", "\"{{SECRET}}\""),
+        ("otp", "\"{{OTP}}\""),
+        ("otp_code", "\"{{OTP}}\""),
+        ("phone", "\"{{USERNAME}}\""),
+        ("mobile", "\"{{USERNAME}}\""),
+        ("phone_number", "\"{{USERNAME}}\""),
+        ("citizen_id", "\"1100000000000\""),
+        ("national_id", "\"1100000000000\""),
+        ("id_card", "\"1100000000000\""),
+    ];
+
+    let mut out = body.to_string();
+    for (key, replacement) in sensitive_keys {
+        let needle = format!("\"{}\"", key);
+        let mut search_from = 0;
+        while let Some(rel_pos) = out[search_from..].find(&needle) {
+            let key_pos = search_from + rel_pos;
+            let after_key = &out[key_pos + needle.len()..];
+            if let Some(colon) = after_key.find(':') {
+                let val_start = key_pos + needle.len() + colon + 1;
+                let remaining = &out[val_start..];
+                let leading_spaces = remaining.len() - remaining.trim_start().len();
+                let trimmed = remaining.trim_start();
+                if trimmed.starts_with('"') {
+                    if let Some(end_quote) = trimmed[1..].find('"') {
+                        let total_old_len = leading_spaces + 1 + end_quote + 1;
+                        out.replace_range(val_start..val_start + total_old_len, &format!(" {}", replacement));
+                        search_from = val_start + replacement.len() + 1;
+                        continue;
+                    }
+                } else if trimmed.starts_with(|c: char| c.is_ascii_digit()) {
+                    let num_len = trimmed.chars().take_while(|c| c.is_ascii_digit()).count();
+                    let total_old_len = leading_spaces + num_len;
+                    out.replace_range(val_start..val_start + total_old_len, &format!(" {}", replacement));
+                    search_from = val_start + replacement.len() + 1;
+                    continue;
+                }
+            }
+            search_from = key_pos + needle.len();
+        }
+    }
+    out
+}
+
+/// Transform a real URL into a cross-environment wildcard pattern (Prod <-> Preprod compatible).
+/// e.g. "https://api.sample.com/v1/wallet" -> "*sample.com*/v1/wallet*"
+pub fn make_environment_wildcard_pattern(url: &str) -> String {
+    let clean = url.trim();
+    if clean.starts_with('*') {
+        return clean.to_string();
+    }
+    let without_proto = clean
+        .strip_prefix("https://")
+        .or_else(|| clean.strip_prefix("http://"))
+        .unwrap_or(clean);
+
+    let base = without_proto.split('?').next().unwrap_or(without_proto).trim_end_matches('/');
+    if let Some(slash_idx) = base.find('/') {
+        let host = &base[..slash_idx];
+        let path = &base[slash_idx..];
+        let parts: Vec<&str> = host.split('.').collect();
+        let domain_base = if parts.len() >= 2 {
+            parts[parts.len() - 2..].join(".")
+        } else {
+            host.to_string()
+        };
+        format!("*{}*{}*", domain_base, path)
+    } else {
+        format!("*{}*", base)
+    }
+}
+
+/// Automatically derive an empty-state scenario body (200 OK with empty arrays and zeroes).
+pub fn auto_derive_empty_scenario(body: &str) -> String {
+    let mut out = body.to_string();
+    let mut i = 0;
+    while i < out.len() {
+        if let Some(bracket_start) = out[i..].find('[') {
+            let start = i + bracket_start;
+            let mut depth = 0;
+            let mut end = None;
+            for (idx, c) in out[start..].char_indices() {
+                if c == '[' {
+                    depth += 1;
+                } else if c == ']' {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(start + idx);
+                        break;
+                    }
+                }
+            }
+            if let Some(bracket_end) = end {
+                out.replace_range(start..=bracket_end, "[]");
+                i = start + 2;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    out
+}
+
 /// Canonical readable & scalable file convention for a mock rule scenario:
 /// `mocks/<domain>/<method>_<path_slug>/<scenario>.json`
 pub fn mock_fixture_path(method: RuleMethod, pattern: &str, scenario: MockScenario) -> String {
@@ -1647,6 +1760,7 @@ pub fn mock_fixture_path(method: RuleMethod, pattern: &str, scenario: MockScenar
 pub struct MapRule {
     pub id: u64,
     pub name: String,
+    pub folder: String,
     pub pattern: String,
     pub method: RuleMethod,
     pub status: u16,
@@ -1663,6 +1777,7 @@ pub struct MapRule {
     pub error_body: String,
     pub empty_status: u16,
     pub empty_body: String,
+    pub inject_props: std::collections::HashMap<String, String>,
 }
 
 impl Default for MapRule {
@@ -1671,6 +1786,7 @@ impl Default for MapRule {
         Self {
             id: 0,
             name: String::new(),
+            folder: "General".into(),
             pattern: String::new(),
             method: RuleMethod::Any,
             status: 200,
@@ -1687,11 +1803,59 @@ impl Default for MapRule {
             error_body: MockScenario::Error.default_body(),
             empty_status: 200,
             empty_body: MockScenario::Empty.default_body(),
+            inject_props: std::collections::HashMap::new(),
         }
     }
 }
 
 impl MapRule {
+    pub fn folder_name(&self) -> &str {
+        let trimmed = self.folder.trim();
+        if trimmed.is_empty() {
+            "General"
+        } else {
+            trimmed
+        }
+    }
+
+    /// Render body applying dynamic injections:
+    /// 1. Replaces `{{KEY}}`, `{{key}}`, `{{Key}}` placeholders from `inject_props`
+    /// 2. Replaces direct JSON key values if present
+    pub fn render_injected_body(&self) -> String {
+        if self.inject_props.is_empty() {
+            return self.body.clone();
+        }
+        let mut rendered = self.body.clone();
+        for (k, v) in &self.inject_props {
+            let upper = format!("{{{{{}}}}}", k.to_ascii_uppercase());
+            let lower = format!("{{{{{}}}}}", k.to_ascii_lowercase());
+            let exact = format!("{{{{{}}}}}", k);
+            rendered = rendered.replace(&upper, v);
+            rendered = rendered.replace(&lower, v);
+            rendered = rendered.replace(&exact, v);
+
+            let key_needle = format!("\"{}\"", k);
+            if let Some(pos) = rendered.find(&key_needle) {
+                let after_key = &rendered[pos + key_needle.len()..];
+                if let Some(colon) = after_key.find(':') {
+                    let val_start = pos + key_needle.len() + colon + 1;
+                    let remaining = &rendered[val_start..];
+                    let leading_spaces = remaining.len() - remaining.trim_start().len();
+                    let trimmed = remaining.trim_start();
+                    if trimmed.starts_with('"') {
+                        if let Some(end_quote) = trimmed[1..].find('"') {
+                            let total_old_len = leading_spaces + 1 + end_quote + 1;
+                            let prefix = if leading_spaces > 0 { " " } else { "" };
+                            let replacement = format!("{}\"{}\"", prefix, v);
+                            rendered.replace_range(val_start..val_start + total_old_len, &replacement);
+                        }
+                    }
+                }
+            }
+        }
+        rendered
+    }
+
     pub fn matches(&self, method: &str, url: &str, body: &str) -> bool {
         self.enabled
             && self.method.matches(method)
@@ -2139,5 +2303,55 @@ mod rule_tests {
             MockScenario::Success,
         );
         assert_eq!(path, "mocks/api.shopwave.dev/get_v1_orders/success.json");
+    }
+
+    #[test]
+    fn sanitize_mock_payload_replaces_pii_with_placeholders() {
+        let raw = r#"{"status":"OK","access_token":"secret_jwt_xyz","phone":"0812345678","otp":"456789","citizen_id":"1234567890123"}"#;
+        let sanitized = sanitize_mock_payload(raw);
+        assert!(!sanitized.contains("secret_jwt_xyz"));
+        assert!(!sanitized.contains("0812345678"));
+        assert!(!sanitized.contains("456789"));
+        assert!(!sanitized.contains("1234567890123"));
+        assert!(sanitized.contains("{{TOKEN}}"));
+        assert!(sanitized.contains("{{USERNAME}}"));
+        assert!(sanitized.contains("{{OTP}}"));
+        assert!(sanitized.contains("1100000000000"));
+    }
+
+    #[test]
+    fn render_injected_body_substitutes_placeholders_and_keys() {
+        let mut rule = MapRule {
+            name: "Login Mock".into(),
+            folder: "Auth".into(),
+            body: r#"{"status":"OK","phone":"{{USERNAME}}","otp":"{{OTP}}","tier":"basic"}"#.into(),
+            ..MapRule::default()
+        };
+        assert_eq!(rule.folder_name(), "Auth");
+
+        rule.inject_props.insert("USERNAME".into(), "0812345678".into());
+        rule.inject_props.insert("OTP".into(), "111111".into());
+        rule.inject_props.insert("tier".into(), "vip".into());
+
+        let rendered = rule.render_injected_body();
+        assert!(rendered.contains("0812345678"));
+        assert!(rendered.contains("111111"));
+        assert!(rendered.contains("vip"));
+    }
+
+    #[test]
+    fn environment_wildcard_pattern_and_empty_scenario_derivation() {
+        assert_eq!(
+            make_environment_wildcard_pattern("https://api.sample.com/v1/wallet"),
+            "*sample.com*/v1/wallet*"
+        );
+        assert_eq!(
+            make_environment_wildcard_pattern("https://api-preprod.sample.com/v1/auth/login?param=1"),
+            "*sample.com*/v1/auth/login*"
+        );
+
+        let body = r#"{"data":{"items":[{"id":1},{"id":2}],"total":2}}"#;
+        let empty = auto_derive_empty_scenario(body);
+        assert!(empty.contains(r#""items":[]"#));
     }
 }

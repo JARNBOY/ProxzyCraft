@@ -74,13 +74,23 @@ Follow these 5 invariants whenever operating or modifying ProxzyCraft:
      - `MockScenario::Empty` (`empty_status` default `200`, `empty_body`)
    - Calling `rule.switch_scenario(target)` persists edits from the current `status`/`body` into the outgoing scenario slot before loading `target` into `rule.status` and `rule.body`.
    - Setting `scenario` to `"passthrough"` via `/__proxzy/scenario` disables the mock rule (`rule.enabled = false`) while keeping the domain in `ssl_allowlist`, allowing real upstream production traffic to flow and be captured.
-4. **Canonical Fixture Path Convention**:
+4. **Canonical Fixture Path Convention & Static Security Redaction**:
    - Always compute fixture paths via `mock_fixture_path(method, pattern, scenario)`:
      ```text
      mocks/<domain>/<method>_<path_slug>/<scenario>.json
      ```
      Example: `POST https://api.Staging.Ex.com/v2/auth/login*` $\to$ `mocks/api.staging.ex.com/post_v2_auth_login/success.json`.
-5. **Compilation & Host Safety Guardrail**:
+   - **Static Security Audit Guard (`sanitize_mock_payload`)**:
+     Whenever real network traffic is saved into a mock rule or ingested via `/__proxzy/mock`, `sanitize_mock_payload` automatically redacts Authorization headers, session tokens, passwords, 10-digit phone numbers, and citizen IDs into parameterized placeholders (`{{TOKEN}}`, `{{USERNAME}}`, `{{OTP}}`). Mocks are 100% PII-safe to commit and share.
+5. **Parameterized Mocking & Dynamic Property Injection (`inject`)**:
+   - Every `MapRule` supports `inject_props` (`HashMap<String, String>`).
+   - On every request intercept, `rule.render_injected_body()` dynamically replaces `{{KEY}}` placeholders and JSON key values (e.g. `phone`, `username`, `otp`, `token`, `tier`) on-the-fly, allowing E2E tests to inject dynamic user credentials (e.g. from `TestUsers.ts`) without mutating base fixtures.
+6. **Modular Folders & Batch Scenario Controls**:
+   - Mocks are grouped into collapsible module folders (`Auth`, `Wallet`, `Home`, `Watch`, `Profile`, `General`).
+   - Batch controls allow switching all rules within a folder to `Success`, `Error`, `Empty`, or `Passthrough` in 1 click or via `POST /__proxzy/scenario {"folder": "..."}`.
+7. **Loopback & Host Security Guard**:
+   - `handle_proxzy_control` enforces loopback host validation (`127.0.0.1`, `localhost`, `[::1]`) and blocks untrusted cross-origin requests with HTTP 403 Forbidden.
+8. **Compilation & Host Safety Guardrail**:
    - `views.rs` and `rules_ui.rs` are textually included at the bottom of `app/src/app.rs` via `include!("views.rs");` and `include!("rules_ui.rs");`. Keep them as included files rather than adding `mod views;` or `mod rules_ui;` in `main.rs`.
    - Verify code changes exclusively with `cargo test --manifest-path app/Cargo.toml`. Never launch the blocking desktop GUI (`cargo run`) or run `networksetup` to mutate host macOS Wi-Fi proxy settings during automated agent runs.
 
@@ -90,14 +100,25 @@ Follow these 5 invariants whenever operating or modifying ProxzyCraft:
 
 ### Workflow 1: Autonomous Mobile UI Test Mocking & Verification (`mobile-mcp` / MobileWright)
 
-Use the in-band HTTP control plane on `http://127.0.0.1:9090/__proxzy/*` to seed mocks, switch scenarios (`success` / `error` / `empty` / `passthrough`), and verify request hit counts during automated mobile UI tests.
+Use the in-band HTTP control plane on `http://127.0.0.1:9090/__proxzy/*` or the zero-dependency `@proxzy/client` SDK to seed mocks, switch scenarios (`success` / `error` / `empty` / `passthrough`), auto-catch live 200 responses, and verify request hit counts during automated mobile UI tests.
 
-1. **Inspect Engine Health & Hit Counters**:
+1. **Auto-Catch Live 200 OK Responses (Solving Cold Start for Any Project)**:
+   - When running a test against staging/preprod without existing mock fixtures:
+   ```bash
+   curl -s -X POST http://127.0.0.1:9090/__proxzy/record \
+     -H "Content-Type: application/json" \
+     -d '{"enabled": true, "domains": ["*.example.com", "api.sample.com"]}'
+   ```
+   Or via CLI flag when starting daemon: `proxzy --headless --auto-record="*.example.com,api.sample.com"`
+   - ProxzyCraft intercepts live 200..=299 responses, runs `sanitize_mock_payload` (redacting tokens, passwords, phones, citizen IDs), generates an empty state via `auto_derive_empty_scenario`, creates an environment-agnostic wildcard pattern, and saves the mock rule. Subsequent test runs hit the mock offline with zero network latency.
+
+2. **Inspect Engine Health & Hit Counters**:
    ```bash
    curl -s http://127.0.0.1:9090/__proxzy/health
    ```
-   Returns JSON containing `status`, `map_enabled`, `ssl_proxying_enabled`, `ssl_allowlist`, and `rules` (including live `hits` and `active_scenario` per rule).
-2. **Upsert a Multi-Scenario Mock Rule (`POST /__proxzy/mock`)**:
+   Returns JSON containing `status`, `auto_record`, `auto_record_domains`, `map_enabled`, `ssl_proxying_enabled`, `ssl_allowlist`, and `rules` (including live `hits` and `active_scenario` per rule).
+
+3. **Upsert a Multi-Scenario Mock Rule (`POST /__proxzy/mock`)**:
    - Send either a `pattern` (Direct URL / wildcard) **or** a `curl` string (raw cURL command).
    - Provide `scenario` (`"success"`, `"error"`, or `"empty"`), `status`, `body`, and optional slot overrides (`success_body`, `error_body`, `empty_body`).
    - ProxzyCraft automatically enables `map_enabled`, adds the extracted domain to `ssl_allowlist`, and enables `ssl_proxying_enabled`.
@@ -117,7 +138,7 @@ Use the in-band HTTP control plane on `http://127.0.0.1:9090/__proxzy/*` to seed
        "empty_body": "{\"balance\": 0, \"items\": []}"
      }'
    ```
-3. **Switch Scenario Dynamically Between UI Test Assertions (`POST /__proxzy/scenario`)**:
+4. **Switch Scenario Dynamically Between UI Test Assertions (`POST /__proxzy/scenario`)**:
    - Switch any matching rule to `"success"`, `"error"`, `"empty"`, or `"passthrough"` (real upstream network):
    ```bash
    curl -s -X POST http://127.0.0.1:9090/__proxzy/scenario \
@@ -127,10 +148,10 @@ Use the in-band HTTP control plane on `http://127.0.0.1:9090/__proxzy/*` to seed
        "scenario": "error"
      }'
    ```
-4. **Trigger Mobile Screen Action & Verify Expectation**:
+5. **Trigger Mobile Screen Action & Verify Expectation**:
    - Drive the mobile screen via `mobile-mcp` / MobileWright (tap, swipe, pull-to-refresh).
    - Query `GET http://127.0.0.1:9090/__proxzy/health` and assert that the target rule's `hits` incremented and the mobile UI rendered the expected state.
-5. **Reset Counters or Clear Rules After Test Suite (`POST /__proxzy/reset`)**:
+6. **Reset Counters or Clear Rules After Test Suite (`POST /__proxzy/reset`)**:
    ```bash
    # Reset hit counters only (keep rules):
    curl -s -X POST http://127.0.0.1:9090/__proxzy/reset \
@@ -191,4 +212,80 @@ When adding features or fixing bugs in the Rust codebase:
    ```
 
 **Completion criterion**: `cargo test --manifest-path app/Cargo.toml` compiles cleanly with zero errors and passes 100% of unit and integration tests.
+
+---
+
+### Workflow 5: Mobile-Wright E2E Testing with ProxzyCraft (`mobile-app-e2e`)
+
+When integrating Mobile-Wright automated UI tests with ProxzyCraft in any test repository:
+
+1. **Import Proxzy Fixture**:
+   In any spec file in `tests/<feature>/<name>.spec.ts`:
+   ```ts
+   import { test, expect } from '@proxzy/client/fixture'
+   import { getTestUser } from '../fixtures/users'
+   ```
+2. **Inject Dynamic User & Switch Scenarios**:
+   ```ts
+   test('Verifies Wallet error and recovery states', async ({ proxzy }) => {
+     // 1. Inject TestUser (phone 0812345678, OTP 111111) dynamically:
+     const user = getTestUser('basic')
+     await proxzy.injectUser({ folder: 'Auth' }, user)
+
+     // 2. Set Wallet module to Error scenario:
+     await proxzy.setFolderScenario('Wallet', 'error')
+
+     // 3. Execute mobile UI steps & assert error view:
+     // ...
+     await proxzy.expectHits('wallet/balance', 1)
+
+     // 4. Recover to Success scenario in 1 call:
+     await proxzy.setFolderScenario('Wallet', 'success')
+     // ...
+   })
+   ```
+3. **Verify Quality Gates**:
+   ```bash
+   npm run typecheck
+   npm run lint
+   npm test
+   ```
+
+**Completion criterion**: All quality gates pass with 0 warnings, zero PII or credentials are hardcoded into Git or mock files, and Mobile-Wright assertions pass against mock/upstream responses.
+
+---
+
+### Workflow 6: Universal Integration for ANY MobileWright, Playwright, or AI Agent Project (`@proxzy/client`)
+
+To integrate ProxzyCraft into ANY mobile automation project (iOS/Android simulators or real devices):
+
+1. **Install or Link Client**:
+   ```bash
+   npm install @proxzy/client
+   # Or link locally from monorepo/submodule:
+   # npm link ../ProxzyCraft/packages/proxzy-client
+   ```
+2. **Start ProxzyCraft Daemon**:
+   ```bash
+   # In CI or local test runner:
+   cargo run --release --manifest-path path/to/ProxzyCraft/app/Cargo.toml -- --headless --auto-record="*.domain.com"
+   ```
+3. **Configure Simulator / Device Wi-Fi Proxy**:
+   Point HTTP & HTTPS proxy to `127.0.0.1:9090` (or host LAN IP `192.168.x.x:9090` for physical devices).
+4. **Drive Test Suite via TypeScript**:
+   ```ts
+   import { ProxzyClient } from '@proxzy/client';
+   const proxzy = new ProxzyClient();
+
+   // Seed mock or switch scenario:
+   await proxzy.setScenario('v1/feed', 'error');
+
+   // Tap in app:
+   await mobile.tap('#refresh');
+
+   // Verify network interception:
+   await proxzy.expectHits('v1/feed', 1);
+   ```
+
+
 
