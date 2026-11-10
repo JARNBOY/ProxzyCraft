@@ -11,9 +11,10 @@
 //! emulators, curl and normal macOS apps.
 
 use crate::model::{
-    auto_derive_empty_scenario, detect_kind, extract_domain_from_pattern, graphql_info,
-    make_environment_wildcard_pattern, now_stamp, sanitize_mock_payload, ApiKind, BreakpointRule,
-    Capture, MapRule, MockScenario, RuleMethod,
+    auto_derive_empty_scenario, detect_json_contract_drift, detect_kind,
+    extract_domain_from_pattern, graphql_info, make_environment_wildcard_pattern, now_stamp,
+    sanitize_mock_payload, ApiKind, BreakpointRule, Capture, MapRule, MockScenario, RuleMethod,
+    SessionCallAudit, TestSession,
 };
 use flate2::read::GzDecoder;
 use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
@@ -88,6 +89,7 @@ pub struct ProxyConfig {
     pub ssl_allowlist: Vec<String>,
     pub auto_record: bool,
     pub auto_record_domains: Vec<String>,
+    pub active_session: Option<TestSession>,
 }
 
 impl Default for ProxyConfig {
@@ -102,6 +104,7 @@ impl Default for ProxyConfig {
             ssl_allowlist: Vec::new(),
             auto_record: false,
             auto_record_domains: Vec::new(),
+            active_session: None,
         }
     }
 }
@@ -685,6 +688,29 @@ where
             write_response(client, &resp, request.method == "HEAD").await?;
             mock_name = Some(rule.name.clone());
             mock_response = Some(resp);
+            let latency = started.elapsed().as_millis() as u64;
+            let scenario_label = match rule.active_scenario {
+                MockScenario::Success => "success",
+                MockScenario::Error => "error",
+                MockScenario::Empty => "empty",
+            };
+            if let Ok(mut cfg) = ctx.config.write() {
+                if let Some(ref mut sess) = cfg.active_session {
+                    let req_path = url.split("://").nth(1).and_then(|s| s.find('/')).map(|idx| &url[idx..]).unwrap_or("/");
+                    if sess.matches_scope(&host, req_path) {
+                        sess.record_call(SessionCallAudit {
+                            timestamp: now_stamp(),
+                            method: request.method.clone(),
+                            url: url.clone(),
+                            status: rule.status,
+                            latency_ms: latency,
+                            source: format!("MOCK (rule: '{}', scenario: '{}')", rule.name, scenario_label),
+                            is_drift_detected: false,
+                            drift_notes: Vec::new(),
+                        });
+                    }
+                }
+            }
             let _ = ctx.tx.send(ProxyEvent::Log {
                 level: "Warn".into(),
                 message: format!("Map Local answered {} with \"{}\"", url, rule.name),
@@ -733,21 +759,45 @@ where
             let _ = ctx.tx.send(ProxyEvent::Capture(Box::new(capture)));
         }
 
+        let mut matching_mock_body = None;
+        if let Ok(cfg) = ctx.config.read() {
+            if let Some(r) = cfg.map_rules.iter().find(|r| {
+                r.method.matches(&request.method) && crate::model::pattern_matches_url(&r.pattern, &url)
+            }) {
+                matching_mock_body = Some(r.body.clone());
+            }
+        }
+        let drift_notes = if let Some(ref m_body) = matching_mock_body {
+            detect_json_contract_drift(m_body, &body_text)
+        } else {
+            Vec::new()
+        };
+        let is_drift_detected = !drift_notes.is_empty();
+        let mut was_auto_recorded = false;
+
         if resp.status >= 200 && resp.status < 300 {
             if let Ok(mut cfg) = ctx.config.write() {
+                let req_path = url.split("://").nth(1).and_then(|s| s.find('/')).map(|idx| &url[idx..]).unwrap_or("/");
                 let should_auto_record = cfg.auto_record
                     && (cfg.auto_record_domains.is_empty()
                         || cfg
                             .auto_record_domains
                             .iter()
-                            .any(|d| crate::model::domain_matches(d, &host)));
+                            .any(|d| crate::model::domain_matches(d, &host)))
+                    && cfg.active_session.as_ref().map(|s| s.matches_scope(&host, req_path)).unwrap_or(true);
                 if should_auto_record {
                     let wildcard_pattern = make_environment_wildcard_pattern(&url);
                     if !cfg.map_rules.iter().any(|r| r.pattern == wildcard_pattern) {
                         let sanitized_body = sanitize_mock_payload(&body_text);
                         let empty_body = auto_derive_empty_scenario(&body_text);
-                        let folder = extract_domain_from_pattern(&wildcard_pattern)
-                            .unwrap_or_else(|| "General".into());
+                        let folder = cfg
+                            .active_session
+                            .as_ref()
+                            .map(|s| s.folder.clone())
+                            .unwrap_or_else(|| {
+                                extract_domain_from_pattern(&wildcard_pattern)
+                                    .unwrap_or_else(|| "General".into())
+                            });
                         let next_id = cfg.map_rules.iter().map(|r| r.id).max().unwrap_or(0) + 1;
                         let rule = MapRule {
                             id: next_id,
@@ -780,12 +830,35 @@ where
                         };
                         cfg.map_rules.push(rule);
                         cfg.map_enabled = true;
+                        was_auto_recorded = true;
                         let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
                         let _ = ctx.tx.send(ProxyEvent::Log {
                             level: "Info".into(),
                             message: format!("Auto-recorded live 200 OK mock for {}", url),
                         });
                     }
+                }
+            }
+        }
+
+        if let Ok(mut cfg) = ctx.config.write() {
+            if let Some(ref mut sess) = cfg.active_session {
+                let req_path = url.split("://").nth(1).and_then(|s| s.find('/')).map(|idx| &url[idx..]).unwrap_or("/");
+                if sess.matches_scope(&host, req_path) {
+                    sess.record_call(SessionCallAudit {
+                        timestamp: now_stamp(),
+                        method: request.method.clone(),
+                        url: url.clone(),
+                        status: resp.status,
+                        latency_ms: latency,
+                        source: if was_auto_recorded {
+                            "AUTO_RECORDED (200 OK -> Mock Created)".into()
+                        } else {
+                            format!("UPSTREAM ({} {})", resp.status, reason(resp.status))
+                        },
+                        is_drift_detected,
+                        drift_notes,
+                    });
                 }
             }
         }
@@ -1095,6 +1168,132 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
             let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
         }
         return make_response(200, "OK", headers, br#"{"ok":true,"auto_record_updated":true}"#.to_vec());
+    }
+
+    if req.method == "POST" && path == "/__proxzy/session/start" {
+        let name = json_str_field(&body_text, "name").unwrap_or_else(|| "TestSession".into());
+        let folder = json_str_field(&body_text, "folder").unwrap_or_else(|| "General".into());
+        let domains = json_str_array(&body_text, "domains");
+        let paths = json_str_array(&body_text, "paths");
+
+        if let Ok(mut cfg) = ctx.config.write() {
+            for d in &domains {
+                if !cfg.ssl_allowlist.iter().any(|existing| existing.eq_ignore_ascii_case(d)) {
+                    cfg.ssl_allowlist.push(d.clone());
+                }
+            }
+            cfg.active_session = Some(TestSession::new(&name, &folder, domains, paths));
+            let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
+            let _ = ctx.tx.send(ProxyEvent::Log {
+                level: "Info".into(),
+                message: format!("Started Test Session \"{}\" (folder: \"{}\")", name, folder),
+            });
+        }
+        let json = format!(
+            "{{\"ok\":true,\"session_started\":true,\"name\":\"{}\",\"folder\":\"{}\"}}",
+            escape_json(&name),
+            escape_json(&folder)
+        );
+        return make_response(200, "OK", headers, json.into_bytes());
+    }
+
+    if req.method == "GET" && path == "/__proxzy/session/summary" {
+        let Ok(cfg) = ctx.config.read() else {
+            return make_response(500, "Internal Server Error", headers, br#"{"ok":false}"#.to_vec());
+        };
+        let Some(ref sess) = cfg.active_session else {
+            return make_response(200, "OK", headers, br#"{"ok":true,"active":false,"message":"No active session"}"#.to_vec());
+        };
+        let calls_json = sess
+            .audit_log
+            .iter()
+            .map(|c| {
+                let drifts_json = c
+                    .drift_notes
+                    .iter()
+                    .map(|d| format!("\"{}\"", escape_json(d)))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "{{\"timestamp\":\"{}\",\"method\":\"{}\",\"url\":\"{}\",\"status\":{},\"latency_ms\":{},\"source\":\"{}\",\"is_drift_detected\":{},\"drift_notes\":[{}]}}",
+                    escape_json(&c.timestamp),
+                    escape_json(&c.method),
+                    escape_json(&c.url),
+                    c.status,
+                    c.latency_ms,
+                    escape_json(&c.source),
+                    c.is_drift_detected,
+                    drifts_json
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let json = format!(
+            "{{\"ok\":true,\"active\":true,\"name\":\"{}\",\"folder\":\"{}\",\"started_at\":\"{}\",\"total_calls\":{},\"mock_calls\":{},\"upstream_calls\":{},\"auto_recorded_calls\":{},\"drift_warnings\":{},\"calls\":[{}]}}",
+            escape_json(&sess.name),
+            escape_json(&sess.folder),
+            escape_json(&sess.started_at),
+            sess.total_calls,
+            sess.mock_calls,
+            sess.upstream_calls,
+            sess.auto_recorded_calls,
+            sess.drift_warnings,
+            calls_json
+        );
+        return make_response(200, "OK", headers, json.into_bytes());
+    }
+
+    if req.method == "POST" && path == "/__proxzy/session/end" {
+        let summary_json = if let Ok(mut cfg) = ctx.config.write() {
+            if let Some(sess) = cfg.active_session.take() {
+                let calls_json = sess
+                    .audit_log
+                    .iter()
+                    .map(|c| {
+                        let drifts_json = c
+                            .drift_notes
+                            .iter()
+                            .map(|d| format!("\"{}\"", escape_json(d)))
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        format!(
+                            "{{\"timestamp\":\"{}\",\"method\":\"{}\",\"url\":\"{}\",\"status\":{},\"latency_ms\":{},\"source\":\"{}\",\"is_drift_detected\":{},\"drift_notes\":[{}]}}",
+                            escape_json(&c.timestamp),
+                            escape_json(&c.method),
+                            escape_json(&c.url),
+                            c.status,
+                            c.latency_ms,
+                            escape_json(&c.source),
+                            c.is_drift_detected,
+                            drifts_json
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let s = format!(
+                    "{{\"ok\":true,\"session_ended\":true,\"name\":\"{}\",\"folder\":\"{}\",\"total_calls\":{},\"mock_calls\":{},\"upstream_calls\":{},\"auto_recorded_calls\":{},\"drift_warnings\":{},\"calls\":[{}]}}",
+                    escape_json(&sess.name),
+                    escape_json(&sess.folder),
+                    sess.total_calls,
+                    sess.mock_calls,
+                    sess.upstream_calls,
+                    sess.auto_recorded_calls,
+                    sess.drift_warnings,
+                    calls_json
+                );
+                let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
+                let _ = ctx.tx.send(ProxyEvent::Log {
+                    level: "Info".into(),
+                    message: format!("Ended Test Session \"{}\" ({} calls recorded)", sess.name, sess.total_calls),
+                });
+                s
+            } else {
+                r#"{"ok":true,"session_ended":false,"message":"No active session to end"}"#.into()
+            }
+        } else {
+            r#"{"ok":false}"#.into()
+        };
+        return make_response(200, "OK", headers, summary_json.into_bytes());
     }
 
     if req.method == "POST" && path == "/__proxzy/inject" {
@@ -2187,6 +2386,49 @@ mod proxy_tests {
             assert!(cfg.auto_record);
             assert!(cfg.auto_record_domains.contains(&"*.sample.com".to_string()));
             assert!(cfg.ssl_allowlist.contains(&"api.trusted.com".to_string()));
+        }
+
+        // 8) Test QA Test Session Audit & Summary Endpoints
+        let sess_start_req = HttpRequest {
+            method: "POST".into(),
+            target: "/__proxzy/session/start".into(),
+            headers: vec![("host".into(), "127.0.0.1:9090".into())],
+            body: br#"{"name":"TC_CHECKOUT_01","folder":"Checkout","domains":["*.sample.com"],"paths":["/v1/checkout/*"]}"#.to_vec(),
+        };
+        let sess_start_resp = handle_proxzy_control(&sess_start_req, "/__proxzy/session/start", &ctx);
+        assert_eq!(sess_start_resp.status, 200);
+        {
+            let cfg = ctx.config.read().unwrap();
+            let sess = cfg.active_session.as_ref().unwrap();
+            assert_eq!(sess.name, "TC_CHECKOUT_01");
+            assert_eq!(sess.folder, "Checkout");
+            assert!(sess.matches_scope("api.sample.com", "/v1/checkout/pay"));
+            assert!(!sess.matches_scope("api.sample.com", "/v1/auth/login"));
+        }
+
+        let sess_summary_req = HttpRequest {
+            method: "GET".into(),
+            target: "/__proxzy/session/summary".into(),
+            headers: vec![("host".into(), "127.0.0.1:9090".into())],
+            body: Vec::new(),
+        };
+        let sess_summary_resp = handle_proxzy_control(&sess_summary_req, "/__proxzy/session/summary", &ctx);
+        assert_eq!(sess_summary_resp.status, 200);
+        let summary_text = String::from_utf8_lossy(&sess_summary_resp.body);
+        assert!(summary_text.contains("\"TC_CHECKOUT_01\""));
+        assert!(summary_text.contains("\"folder\":\"Checkout\""));
+
+        let sess_end_req = HttpRequest {
+            method: "POST".into(),
+            target: "/__proxzy/session/end".into(),
+            headers: vec![("host".into(), "127.0.0.1:9090".into())],
+            body: Vec::new(),
+        };
+        let sess_end_resp = handle_proxzy_control(&sess_end_req, "/__proxzy/session/end", &ctx);
+        assert_eq!(sess_end_resp.status, 200);
+        {
+            let cfg = ctx.config.read().unwrap();
+            assert!(cfg.active_session.is_none());
         }
     }
 }

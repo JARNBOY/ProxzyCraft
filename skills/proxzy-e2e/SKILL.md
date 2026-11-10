@@ -125,6 +125,35 @@ await proxzy.injectUser(
 );
 ```
 
+### Step 6: Testcase-Scoped Session Audit & API Contract Regression Drift
+
+To guarantee that auto-recording **only captures the application's domain + path for that specific QA screen play** (and never unrelated public web traffic), and to verify whether the test ran on Mock or Real Prod:
+
+```ts
+// 1. Start scoped session at test begin:
+await proxzy.startSession({
+  name: 'TC_WALLET_01_BALANCE',
+  folder: 'Wallet',
+  domains: ['api.example.com'],
+  paths: ['/v1/wallet/*'] // Scoped strictly to this screen play's API paths!
+});
+
+// 2. Execute MobileWright Screen Play:
+await mobile.tap('#wallet-tab');
+
+// 3. End session and verify audit trail:
+const summary = await proxzy.endSession();
+console.log('Test Execution Audit:', summary);
+
+// Assert that the test passed against mock (no leak to real production):
+expect(summary.mock_calls).toBeGreaterThan(0);
+expect(summary.upstream_calls).toBe(0);
+
+// If testing in Real Upstream Mode, assert zero contract drift from expected schema:
+expect(summary.drift_warnings).toBe(0);
+```
+
+
 ---
 
 ## 3. Core Invariants & Safety Guardrails
@@ -132,3 +161,4 @@ await proxzy.injectUser(
 1. **Selective SSL Interception**: Interception is only active for domains explicitly in `ssl_allowlist`. Other domains pass through untouched without TLS interference.
 2. **PII Safety**: All responses saved to mock rules are automatically sanitized. Never commit raw JWTs or passwords.
 3. **Loopback Protection**: Control plane on `/__proxzy/*` rejects non-loopback requests with HTTP 403 Forbidden.
+

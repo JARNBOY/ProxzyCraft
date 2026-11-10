@@ -1902,6 +1902,139 @@ impl MapRule {
     }
 }
 
+/// Extract all JSON key names from a JSON string without external dependencies.
+pub fn extract_json_keys(json: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let bytes = json.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b'"' {
+            let start = i + 1;
+            let mut j = start;
+            let mut escaped = false;
+            while j < len {
+                if bytes[j] == b'\\' && !escaped {
+                    escaped = true;
+                } else if bytes[j] == b'"' && !escaped {
+                    break;
+                } else {
+                    escaped = false;
+                }
+                j += 1;
+            }
+            if j < len {
+                let candidate = &json[start..j];
+                let mut k = j + 1;
+                while k < len && (bytes[k] == b' ' || bytes[k] == b'\t' || bytes[k] == b'\r' || bytes[k] == b'\n') {
+                    k += 1;
+                }
+                if k < len && bytes[k] == b':' {
+                    let key_str = candidate.trim().to_string();
+                    if !key_str.is_empty() && !keys.contains(&key_str) {
+                        keys.push(key_str);
+                    }
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    keys
+}
+
+/// Detect contract drift between expected mock payload and actual live response payload.
+/// Returns a list of drift notes (e.g. missing keys or new unmocked keys).
+pub fn detect_json_contract_drift(mock_json: &str, live_json: &str) -> Vec<String> {
+    let mock_keys = extract_json_keys(mock_json);
+    let live_keys = extract_json_keys(live_json);
+    let mut drifts = Vec::new();
+
+    for k in &mock_keys {
+        if !live_keys.contains(k) {
+            drifts.push(format!("Missing key in live response: \"{}\"", k));
+        }
+    }
+    for k in &live_keys {
+        if !mock_keys.contains(k) {
+            drifts.push(format!("New unmocked key in live response: \"{}\"", k));
+        }
+    }
+    drifts
+}
+
+/// Audit entry for each network request processed during an active test session.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionCallAudit {
+    pub timestamp: String,
+    pub method: String,
+    pub url: String,
+    pub status: u16,
+    pub latency_ms: u64,
+    pub source: String,
+    pub is_drift_detected: bool,
+    pub drift_notes: Vec<String>,
+}
+
+/// Active Test Session for QA Testcase screen play execution.
+/// Scopes auto-recording and captures a comprehensive audit trail.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TestSession {
+    pub name: String,
+    pub folder: String,
+    pub filter_domains: Vec<String>,
+    pub filter_paths: Vec<String>,
+    pub started_at: String,
+    pub total_calls: usize,
+    pub mock_calls: usize,
+    pub upstream_calls: usize,
+    pub auto_recorded_calls: usize,
+    pub drift_warnings: usize,
+    pub audit_log: Vec<SessionCallAudit>,
+}
+
+impl TestSession {
+    pub fn new(name: &str, folder: &str, filter_domains: Vec<String>, filter_paths: Vec<String>) -> Self {
+        Self {
+            name: name.to_string(),
+            folder: if folder.trim().is_empty() { "General".into() } else { folder.trim().to_string() },
+            filter_domains,
+            filter_paths,
+            started_at: now_stamp(),
+            total_calls: 0,
+            mock_calls: 0,
+            upstream_calls: 0,
+            auto_recorded_calls: 0,
+            drift_warnings: 0,
+            audit_log: Vec::new(),
+        }
+    }
+
+    pub fn matches_scope(&self, host: &str, path: &str) -> bool {
+        let domain_match = self.filter_domains.is_empty()
+            || self.filter_domains.iter().any(|d| domain_matches(d, host));
+        let path_match = self.filter_paths.is_empty()
+            || self.filter_paths.iter().any(|p| pattern_matches_url(p, path));
+        domain_match && path_match
+    }
+
+    pub fn record_call(&mut self, call: SessionCallAudit) {
+        self.total_calls += 1;
+        if call.source.starts_with("MOCK") {
+            self.mock_calls += 1;
+        } else if call.source.starts_with("AUTO_RECORDED") {
+            self.auto_recorded_calls += 1;
+        } else {
+            self.upstream_calls += 1;
+        }
+        if call.is_drift_detected {
+            self.drift_warnings += 1;
+        }
+        self.audit_log.push(call);
+    }
+}
+
 pub fn sample_map_rules() -> Vec<MapRule> {
     let prod_body = sample_captures()[0].resp_body.clone();
     let rec_body = sample_captures()[5].resp_body.clone();
@@ -2353,5 +2486,52 @@ mod rule_tests {
         let body = r#"{"data":{"items":[{"id":1},{"id":2}],"total":2}}"#;
         let empty = auto_derive_empty_scenario(body);
         assert!(empty.contains(r#""items":[]"#));
+    }
+
+    #[test]
+    fn contract_drift_and_session_audit_flow() {
+        let mock_body = r#"{"status": "ok", "balance": 100.0, "currency": "THB"}"#;
+        let real_body = r#"{"status": "ok", "wallet_balance": 100.0, "currency": "THB", "extra_meta": true}"#;
+
+        let drifts = detect_json_contract_drift(mock_body, real_body);
+        assert!(drifts.iter().any(|d| d.contains("Missing key in live response: \"balance\"")));
+        assert!(drifts.iter().any(|d| d.contains("New unmocked key in live response: \"wallet_balance\"")));
+        assert!(drifts.iter().any(|d| d.contains("New unmocked key in live response: \"extra_meta\"")));
+
+        let mut session = TestSession::new(
+            "TC_WALLET_01",
+            "Wallet",
+            vec!["*.sample.com".into()],
+            vec!["/v1/wallet/*".into()],
+        );
+        assert!(session.matches_scope("api.sample.com", "/v1/wallet/balance"));
+        assert!(!session.matches_scope("google.com", "/search"));
+        assert!(!session.matches_scope("api.sample.com", "/v1/auth/login"));
+
+        session.record_call(SessionCallAudit {
+            timestamp: "12:00:00".into(),
+            method: "GET".into(),
+            url: "https://api.sample.com/v1/wallet/balance".into(),
+            status: 200,
+            latency_ms: 0,
+            source: "MOCK (rule: 'Wallet', scenario: 'success')".into(),
+            is_drift_detected: false,
+            drift_notes: Vec::new(),
+        });
+        session.record_call(SessionCallAudit {
+            timestamp: "12:00:01".into(),
+            method: "GET".into(),
+            url: "https://api.sample.com/v1/wallet/history".into(),
+            status: 200,
+            latency_ms: 85,
+            source: "UPSTREAM (200 OK)".into(),
+            is_drift_detected: true,
+            drift_notes: drifts,
+        });
+
+        assert_eq!(session.total_calls, 2);
+        assert_eq!(session.mock_calls, 1);
+        assert_eq!(session.upstream_calls, 1);
+        assert_eq!(session.drift_warnings, 1);
     }
 }

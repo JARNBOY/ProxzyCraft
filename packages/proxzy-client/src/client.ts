@@ -50,6 +50,40 @@ export interface InjectOptions {
   inject: Record<string, string | number | boolean>;
 }
 
+export interface SessionCallAudit {
+  timestamp: string;
+  method: string;
+  url: string;
+  status: number;
+  latency_ms: number;
+  source: string;
+  is_drift_detected: boolean;
+  drift_notes: string[];
+}
+
+export interface SessionSummary {
+  ok: boolean;
+  active?: boolean;
+  session_started?: boolean;
+  session_ended?: boolean;
+  name: string;
+  folder: string;
+  started_at?: string;
+  total_calls: number;
+  mock_calls: number;
+  upstream_calls: number;
+  auto_recorded_calls: number;
+  drift_warnings: number;
+  calls: SessionCallAudit[];
+}
+
+export interface SessionStartOptions {
+  name: string;
+  folder?: string;
+  domains?: string[];
+  paths?: string[];
+}
+
 export interface ProxzyClientOptions {
   baseUrl?: string;
   timeoutMs?: number;
@@ -286,6 +320,52 @@ export class ProxzyClient {
       body: JSON.stringify({ clear_rules: clearRules }),
     });
     return res.ok;
+  }
+
+  /**
+   * Start a scoped QA Test Session.
+   *
+   * Filters auto-recording to the specific testcase application domain/paths
+   * and captures an execution audit trail.
+   */
+  async startSession(options: SessionStartOptions): Promise<boolean> {
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/__proxzy/session/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: options.name,
+        folder: options.folder ?? 'General',
+        domains: options.domains ?? [],
+        paths: options.paths ?? [],
+      }),
+    });
+    return res.ok;
+  }
+
+  /**
+   * Retrieve the live execution audit summary of the currently active test session.
+   */
+  async getSessionSummary(): Promise<SessionSummary> {
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/__proxzy/session/summary`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch session summary: status ${res.status}`);
+    }
+    return (await res.json()) as SessionSummary;
+  }
+
+  /**
+   * End the current test session and return the final audit summary.
+   */
+  async endSession(): Promise<SessionSummary> {
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/__proxzy/session/end`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to end session: status ${res.status}`);
+    }
+    return (await res.json()) as SessionSummary;
   }
 
   private async fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {

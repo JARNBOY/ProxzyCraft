@@ -517,6 +517,11 @@ impl App {
 
     fn sync_proxy_config(&self) {
         if let Some(handle) = &self.proxy {
+            let (auto_rec, auto_rec_domains, active_session) = handle
+                .config
+                .read()
+                .map(|c| (c.auto_record, c.auto_record_domains.clone(), c.active_session.clone()))
+                .unwrap_or((false, Vec::new(), None));
             handle.update(proxy::ProxyConfig {
                 recording: self.recording,
                 map_enabled: self.map_enabled,
@@ -525,8 +530,9 @@ impl App {
                 breakpoints: self.breakpoints.clone(),
                 ssl_proxying_enabled: self.ssl_proxying_enabled,
                 ssl_allowlist: self.ssl_allowlist.clone(),
-                auto_record: false,
-                auto_record_domains: Vec::new(),
+                auto_record: auto_rec,
+                auto_record_domains: auto_rec_domains,
+                active_session,
             });
         }
     }

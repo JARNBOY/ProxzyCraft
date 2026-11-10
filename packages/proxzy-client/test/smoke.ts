@@ -13,5 +13,8 @@ console.log('Has enableAutoRecord method:', typeof client.enableAutoRecord === '
 console.log('Has disableAutoRecord method:', typeof client.disableAutoRecord === 'function');
 console.log('Has expectHits method:', typeof client.expectHits === 'function');
 console.log('Has reset method:', typeof client.reset === 'function');
+console.log('Has startSession method:', typeof client.startSession === 'function');
+console.log('Has getSessionSummary method:', typeof client.getSessionSummary === 'function');
+console.log('Has endSession method:', typeof client.endSession === 'function');
 console.log('All ProxzyClient methods verified successfully.');
 
