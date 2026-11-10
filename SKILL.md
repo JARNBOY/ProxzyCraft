@@ -75,13 +75,19 @@ Follow these 5 invariants whenever operating or modifying ProxzyCraft:
    - Calling `rule.switch_scenario(target)` persists edits from the current `status`/`body` into the outgoing scenario slot before loading `target` into `rule.status` and `rule.body`.
    - Setting `scenario` to `"passthrough"` via `/__proxzy/scenario` disables the mock rule (`rule.enabled = false`) while keeping the domain in `ssl_allowlist`, allowing real upstream production traffic to flow and be captured.
 4. **Canonical Fixture Path Convention & Static Security Redaction**:
-   - Always compute fixture paths via `mock_fixture_path(method, pattern, scenario)`:
+   - Always compute fixture paths via `mock_versioned_fixture_path(env, version, method, pattern, scenario)`:
      ```text
-     mocks/<domain>/<method>_<path_slug>/<scenario>.json
+     mocks/<env>/v<version>/<domain>/<method>_<path_slug>/<scenario>.json
      ```
-     Example: `POST https://api.Staging.Ex.com/v2/auth/login*` $\to$ `mocks/api.staging.ex.com/post_v2_auth_login/success.json`.
+     Example: `env="preprod"`, `version="1.1.0"`, `POST https://api.sample.com/v2/auth/login*` $\to$ `mocks/preprod/v1.1.0/api.sample.com/post_v2_auth_login/success.json`.
+     *(Fallback: If `env` and `version` are empty, defaults to unversioned `mocks/<domain>/<method>_<path_slug>/<scenario>.json` for 100% backward compatibility).*
    - **Static Security Audit Guard (`sanitize_mock_payload`)**:
      Whenever real network traffic is saved into a mock rule or ingested via `/__proxzy/mock`, `sanitize_mock_payload` automatically redacts Authorization headers, session tokens, passwords, 10-digit phone numbers, and citizen IDs into parameterized placeholders (`{{TOKEN}}`, `{{USERNAME}}`, `{{OTP}}`). Mocks are 100% PII-safe to commit and share.
+   - **Versioned API Contract Drift Classification (`analyze_contract_drift`)**:
+     When running regression tests against real upstream backends (`passthrough` mode), ProxzyCraft compares live response schema with baseline mock schema:
+     - `BREAKING:` Live API omitted or renamed an expected mock field &rarr; potential mobile app crash.
+     - `ADDITIVE:` Live API returned new fields not yet present in baseline mock &rarr; backward-compatible enhancement.
+     Session audits track `breaking_drifts` and `additive_drifts` with version stamps (`app_version`, `baseline_version`, `env`).
 5. **Parameterized Mocking & Dynamic Property Injection (`inject`)**:
    - Every `MapRule` supports `inject_props` (`HashMap<String, String>`).
    - On every request intercept, `rule.render_injected_body()` dynamically replaces `{{KEY}}` placeholders and JSON key values (e.g. `phone`, `username`, `otp`, `token`, `tier`) on-the-fly, allowing E2E tests to inject dynamic user credentials (e.g. from `TestUsers.ts`) without mutating base fixtures.

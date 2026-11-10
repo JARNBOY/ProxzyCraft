@@ -194,10 +194,24 @@ External frameworks (XCTest, Espresso, Python, Shell) can control ProxzyCraft di
 | :--- | :--- | :--- |
 | `/__proxzy/health` | `GET` | Returns engine status, active rules, hit counts, and SSL allowlist. |
 | `/__proxzy/record` | `POST` | Toggles Auto-Catch live 200 OK mode and updates trusted domains. |
-| `/__proxzy/mock` | `POST` | Upserts a 3-scenario mock rule (from wildcard pattern or cURL). |
+| `/__proxzy/mock` | `POST` | Upserts a 3-scenario mock rule (from wildcard pattern or cURL) with optional `app_version` and `env`. |
 | `/__proxzy/scenario` | `POST` | Switches rule or folder to `success`, `error`, `empty`, or `passthrough`. |
 | `/__proxzy/inject` | `POST` | Injects dynamic template values (`{{KEY}}`) without altering base mocks. |
-| `/__proxzy/reset` | `POST` | Resets hit counters (or deletes all rules if `clear_rules: true`). |
+| `/__proxzy/session/start` | `POST` | Starts a testcase-scoped audit session with `app_version`, `baseline_version`, `env`, and path filters. |
+| `/__proxzy/session/summary` | `GET` | Returns real-time audit summary (`mock_calls`, `upstream_calls`, `breaking_drifts`, `additive_drifts`). |
+| `/__proxzy/session/end` | `POST` | Closes active session, produces final audit report, and flushes session state. |
+| `/__proxzy/reset` | `POST` | Resets hit counters and clears session state (or deletes all rules if `clear_rules: true`). |
+
+---
+
+## 🔍 Version-Stamped Multi-Env Regression &amp; Contract Drift
+
+ProxzyCraft features pure-Rust, zero-dependency JSON schema drift detection:
+* **Breaking Drifts (`missing_in_live`):** Live API omitted or altered an expected field present in mock fixtures &rarr; flags critical QA regressions that can crash the mobile UI.
+* **Additive Drifts (`added_in_live`):** Live API introduced new fields not yet defined in baseline mocks &rarr; flags non-breaking evolutions for mock fixture updates.
+* **Multi-Version Directory Hierarchy:** Fixtures automatically scale cleanly across environments without collision:
+  `mocks/<env>/v<version>/<domain>/<method>_<slug>/<scenario>.json`
+  *(e.g., `mocks/preprod/v1.1.0/api.example.com/get_v1_wallet_balance/success.json`)*
 
 ---
 

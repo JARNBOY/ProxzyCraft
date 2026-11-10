@@ -1756,6 +1756,31 @@ pub fn mock_fixture_path(method: RuleMethod, pattern: &str, scenario: MockScenar
     )
 }
 
+/// Canonical scalable versioned fixture path:
+/// `mocks/<env>/v<version>/<domain>/<method>_<path_slug>/<scenario>.json`
+/// If `env` or `version` are empty, falls back gracefully to `mocks/<domain>/...`
+pub fn mock_versioned_fixture_path(
+    env: &str,
+    version: &str,
+    method: RuleMethod,
+    pattern: &str,
+    scenario: MockScenario,
+) -> String {
+    let clean_env = env.trim().to_lowercase();
+    let clean_ver = version.trim().trim_start_matches('v').to_lowercase();
+    let base_fixture = mock_fixture_path(method, pattern, scenario);
+    if clean_env.is_empty() && clean_ver.is_empty() {
+        return base_fixture;
+    }
+    let prefix = match (!clean_env.is_empty(), !clean_ver.is_empty()) {
+        (true, true) => format!("mocks/{}/v{}/", clean_env, clean_ver),
+        (true, false) => format!("mocks/{}/", clean_env),
+        (false, true) => format!("mocks/v{}/", clean_ver),
+        (false, false) => "mocks/".into(),
+    };
+    base_fixture.replacen("mocks/", &prefix, 1)
+}
+
 #[derive(Clone)]
 pub struct MapRule {
     pub id: u64,
@@ -1778,6 +1803,8 @@ pub struct MapRule {
     pub empty_status: u16,
     pub empty_body: String,
     pub inject_props: std::collections::HashMap<String, String>,
+    pub app_version: String,
+    pub env: String,
 }
 
 impl Default for MapRule {
@@ -1804,6 +1831,8 @@ impl Default for MapRule {
             empty_status: 200,
             empty_body: MockScenario::Empty.default_body(),
             inject_props: std::collections::HashMap::new(),
+            app_version: String::new(),
+            env: String::new(),
         }
     }
 }
@@ -1900,6 +1929,10 @@ impl MapRule {
     pub fn fixture_path(&self) -> String {
         mock_fixture_path(self.method, &self.pattern, self.active_scenario)
     }
+
+    pub fn fixture_versioned_path(&self) -> String {
+        mock_versioned_fixture_path(&self.env, &self.app_version, self.method, &self.pattern, self.active_scenario)
+    }
 }
 
 /// Extract all JSON key names from a JSON string without external dependencies.
@@ -1944,24 +1977,48 @@ pub fn extract_json_keys(json: &str) -> Vec<String> {
     keys
 }
 
-/// Detect contract drift between expected mock payload and actual live response payload.
-/// Returns a list of drift notes (e.g. missing keys or new unmocked keys).
-pub fn detect_json_contract_drift(mock_json: &str, live_json: &str) -> Vec<String> {
+/// Detailed contract drift breakdown classifying breaking vs additive changes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContractDriftReport {
+    pub is_drift_detected: bool,
+    pub missing_in_live: Vec<String>, // Potential breaking change: client expects field, live API omitted it!
+    pub added_in_live: Vec<String>,   // Additive / new feature change: live API sent new field client didn't mock
+    pub notes: Vec<String>,
+}
+
+/// Analyze contract drift and categorize breaking vs additive changes.
+pub fn analyze_contract_drift(mock_json: &str, live_json: &str) -> ContractDriftReport {
     let mock_keys = extract_json_keys(mock_json);
     let live_keys = extract_json_keys(live_json);
-    let mut drifts = Vec::new();
+    let mut missing_in_live = Vec::new();
+    let mut added_in_live = Vec::new();
+    let mut notes = Vec::new();
 
     for k in &mock_keys {
         if !live_keys.contains(k) {
-            drifts.push(format!("Missing key in live response: \"{}\"", k));
+            missing_in_live.push(k.clone());
+            notes.push(format!("BREAKING: Missing key in live response: \"{}\"", k));
         }
     }
     for k in &live_keys {
         if !mock_keys.contains(k) {
-            drifts.push(format!("New unmocked key in live response: \"{}\"", k));
+            added_in_live.push(k.clone());
+            notes.push(format!("ADDITIVE: New key in live response: \"{}\"", k));
         }
     }
-    drifts
+    let is_drift_detected = !missing_in_live.is_empty() || !added_in_live.is_empty();
+    ContractDriftReport {
+        is_drift_detected,
+        missing_in_live,
+        added_in_live,
+        notes,
+    }
+}
+
+/// Detect contract drift between expected mock payload and actual live response payload.
+/// Returns a list of drift notes (e.g. missing keys or new unmocked keys).
+pub fn detect_json_contract_drift(mock_json: &str, live_json: &str) -> Vec<String> {
+    analyze_contract_drift(mock_json, live_json).notes
 }
 
 /// Audit entry for each network request processed during an active test session.
@@ -1973,8 +2030,13 @@ pub struct SessionCallAudit {
     pub status: u16,
     pub latency_ms: u64,
     pub source: String,
+    pub app_version: String,
+    pub baseline_version: String,
+    pub env: String,
     pub is_drift_detected: bool,
     pub drift_notes: Vec<String>,
+    pub breaking_changes_count: usize,
+    pub additive_changes_count: usize,
 }
 
 /// Active Test Session for QA Testcase screen play execution.
@@ -1983,6 +2045,9 @@ pub struct SessionCallAudit {
 pub struct TestSession {
     pub name: String,
     pub folder: String,
+    pub app_version: String,
+    pub baseline_version: String,
+    pub env: String,
     pub filter_domains: Vec<String>,
     pub filter_paths: Vec<String>,
     pub started_at: String,
@@ -1991,14 +2056,27 @@ pub struct TestSession {
     pub upstream_calls: usize,
     pub auto_recorded_calls: usize,
     pub drift_warnings: usize,
+    pub breaking_drifts: usize,
+    pub additive_drifts: usize,
     pub audit_log: Vec<SessionCallAudit>,
 }
 
 impl TestSession {
-    pub fn new(name: &str, folder: &str, filter_domains: Vec<String>, filter_paths: Vec<String>) -> Self {
+    pub fn new(
+        name: &str,
+        folder: &str,
+        app_version: &str,
+        baseline_version: &str,
+        env: &str,
+        filter_domains: Vec<String>,
+        filter_paths: Vec<String>,
+    ) -> Self {
         Self {
             name: name.to_string(),
             folder: if folder.trim().is_empty() { "General".into() } else { folder.trim().to_string() },
+            app_version: app_version.trim().to_string(),
+            baseline_version: baseline_version.trim().to_string(),
+            env: env.trim().to_string(),
             filter_domains,
             filter_paths,
             started_at: now_stamp(),
@@ -2007,6 +2085,8 @@ impl TestSession {
             upstream_calls: 0,
             auto_recorded_calls: 0,
             drift_warnings: 0,
+            breaking_drifts: 0,
+            additive_drifts: 0,
             audit_log: Vec::new(),
         }
     }
@@ -2030,6 +2110,8 @@ impl TestSession {
         }
         if call.is_drift_detected {
             self.drift_warnings += 1;
+            self.breaking_drifts += call.breaking_changes_count;
+            self.additive_drifts += call.additive_changes_count;
         }
         self.audit_log.push(call);
     }
@@ -2493,17 +2575,50 @@ mod rule_tests {
         let mock_body = r#"{"status": "ok", "balance": 100.0, "currency": "THB"}"#;
         let real_body = r#"{"status": "ok", "wallet_balance": 100.0, "currency": "THB", "extra_meta": true}"#;
 
-        let drifts = detect_json_contract_drift(mock_body, real_body);
-        assert!(drifts.iter().any(|d| d.contains("Missing key in live response: \"balance\"")));
-        assert!(drifts.iter().any(|d| d.contains("New unmocked key in live response: \"wallet_balance\"")));
-        assert!(drifts.iter().any(|d| d.contains("New unmocked key in live response: \"extra_meta\"")));
+        let report = analyze_contract_drift(mock_body, real_body);
+        assert!(report.is_drift_detected);
+        assert_eq!(report.missing_in_live, vec!["balance".to_string()]);
+        assert_eq!(report.added_in_live, vec!["wallet_balance".to_string(), "extra_meta".to_string()]);
+        assert!(report.notes.iter().any(|d| d.contains("BREAKING: Missing key in live response: \"balance\"")));
+        assert!(report.notes.iter().any(|d| d.contains("ADDITIVE: New key in live response: \"wallet_balance\"")));
+
+        // Test versioned fixture paths
+        let v_path = mock_versioned_fixture_path(
+            "preprod",
+            "1.1.0",
+            RuleMethod::Get,
+            "https://api.sample.com/v1/wallet/balance",
+            MockScenario::Success,
+        );
+        assert_eq!(
+            v_path,
+            "mocks/preprod/v1.1.0/api.sample.com/get_v1_wallet_balance/success.json"
+        );
+
+        let default_v_path = mock_versioned_fixture_path(
+            "",
+            "",
+            RuleMethod::Get,
+            "https://api.sample.com/v1/wallet/balance",
+            MockScenario::Success,
+        );
+        assert_eq!(
+            default_v_path,
+            "mocks/api.sample.com/get_v1_wallet_balance/success.json"
+        );
 
         let mut session = TestSession::new(
             "TC_WALLET_01",
             "Wallet",
+            "1.1.0",
+            "1.0.0",
+            "preprod",
             vec!["*.sample.com".into()],
             vec!["/v1/wallet/*".into()],
         );
+        assert_eq!(session.app_version, "1.1.0");
+        assert_eq!(session.baseline_version, "1.0.0");
+        assert_eq!(session.env, "preprod");
         assert!(session.matches_scope("api.sample.com", "/v1/wallet/balance"));
         assert!(!session.matches_scope("google.com", "/search"));
         assert!(!session.matches_scope("api.sample.com", "/v1/auth/login"));
@@ -2515,8 +2630,13 @@ mod rule_tests {
             status: 200,
             latency_ms: 0,
             source: "MOCK (rule: 'Wallet', scenario: 'success')".into(),
+            app_version: "1.1.0".into(),
+            baseline_version: "1.0.0".into(),
+            env: "preprod".into(),
             is_drift_detected: false,
             drift_notes: Vec::new(),
+            breaking_changes_count: 0,
+            additive_changes_count: 0,
         });
         session.record_call(SessionCallAudit {
             timestamp: "12:00:01".into(),
@@ -2525,13 +2645,20 @@ mod rule_tests {
             status: 200,
             latency_ms: 85,
             source: "UPSTREAM (200 OK)".into(),
+            app_version: "1.1.0".into(),
+            baseline_version: "1.0.0".into(),
+            env: "preprod".into(),
             is_drift_detected: true,
-            drift_notes: drifts,
+            drift_notes: report.notes,
+            breaking_changes_count: report.missing_in_live.len(),
+            additive_changes_count: report.added_in_live.len(),
         });
 
         assert_eq!(session.total_calls, 2);
         assert_eq!(session.mock_calls, 1);
         assert_eq!(session.upstream_calls, 1);
         assert_eq!(session.drift_warnings, 1);
+        assert_eq!(session.breaking_drifts, 1);
+        assert_eq!(session.additive_drifts, 2);
     }
 }

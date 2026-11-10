@@ -125,23 +125,37 @@ await proxzy.injectUser(
 );
 ```
 
-### Step 6: Testcase-Scoped Session Audit & API Contract Regression Drift
+### Step 6: Testcase-Scoped Session Audit, Version Stamping & Contract Drift
 
-To guarantee that auto-recording **only captures the application's domain + path for that specific QA screen play** (and never unrelated public web traffic), and to verify whether the test ran on Mock or Real Prod:
+To guarantee that auto-recording **only captures the application's domain + path for that specific QA screen play** (and never unrelated public web traffic), to separate app releases (`1.1.0`) across environments (`preprod`, `staging`, `prod`), and to verify whether the test ran on Mock or Real Prod:
 
 ```ts
-// 1. Start scoped session at test begin:
+// 1. (Optional) For known ticket specs, seed Mock Gate upfront:
+await proxzy.mock({
+  pattern: 'https://api.example.com/v1/wallet/balance*',
+  folder: 'Wallet',
+  app_version: '1.1.0',
+  env: 'preprod',
+  scenario: 'success',
+  success_status: 200,
+  success_body: { balance: 9950.0, currency: 'THB', tier: 'Platinum' }
+});
+
+// 2. Start scoped session with version and environment metadata:
 await proxzy.startSession({
   name: 'TC_WALLET_01_BALANCE',
   folder: 'Wallet',
+  app_version: '1.1.0',         // Current release candidate under test
+  baseline_version: '1.0.0',    // Production baseline version
+  env: 'preprod',               // Environment: 'preprod' | 'staging' | 'prod'
   domains: ['api.example.com'],
-  paths: ['/v1/wallet/*'] // Scoped strictly to this screen play's API paths!
+  paths: ['/v1/wallet/*']       // Scoped strictly to this screen play's API paths!
 });
 
-// 2. Execute MobileWright Screen Play:
+// 3. Execute MobileWright Screen Play:
 await mobile.tap('#wallet-tab');
 
-// 3. End session and verify audit trail:
+// 4. End session and verify audit trail:
 const summary = await proxzy.endSession();
 console.log('Test Execution Audit:', summary);
 
@@ -149,8 +163,13 @@ console.log('Test Execution Audit:', summary);
 expect(summary.mock_calls).toBeGreaterThan(0);
 expect(summary.upstream_calls).toBe(0);
 
-// If testing in Real Upstream Mode, assert zero contract drift from expected schema:
-expect(summary.drift_warnings).toBe(0);
+// If testing in Real Upstream Regression Mode:
+// - Assert ZERO breaking drifts (no missing fields that crash the app):
+expect(summary.breaking_drifts).toBe(0);
+// - Review any additive drifts (new backend capabilities):
+if (summary.additive_drifts > 0) {
+  console.info(`Found ${summary.additive_drifts} additive fields in upstream API`);
+}
 ```
 
 

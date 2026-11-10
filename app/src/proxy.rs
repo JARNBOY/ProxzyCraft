@@ -11,10 +11,9 @@
 //! emulators, curl and normal macOS apps.
 
 use crate::model::{
-    auto_derive_empty_scenario, detect_json_contract_drift, detect_kind,
-    extract_domain_from_pattern, graphql_info, make_environment_wildcard_pattern, now_stamp,
-    sanitize_mock_payload, ApiKind, BreakpointRule, Capture, MapRule, MockScenario, RuleMethod,
-    SessionCallAudit, TestSession,
+    auto_derive_empty_scenario, detect_kind, extract_domain_from_pattern, graphql_info,
+    make_environment_wildcard_pattern, now_stamp, sanitize_mock_payload, ApiKind, BreakpointRule,
+    Capture, MapRule, MockScenario, RuleMethod, SessionCallAudit, TestSession,
 };
 use flate2::read::GzDecoder;
 use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
@@ -705,8 +704,13 @@ where
                             status: rule.status,
                             latency_ms: latency,
                             source: format!("MOCK (rule: '{}', scenario: '{}')", rule.name, scenario_label),
+                            app_version: sess.app_version.clone(),
+                            baseline_version: sess.baseline_version.clone(),
+                            env: sess.env.clone(),
                             is_drift_detected: false,
                             drift_notes: Vec::new(),
+                            breaking_changes_count: 0,
+                            additive_changes_count: 0,
                         });
                     }
                 }
@@ -767,12 +771,20 @@ where
                 matching_mock_body = Some(r.body.clone());
             }
         }
-        let drift_notes = if let Some(ref m_body) = matching_mock_body {
-            detect_json_contract_drift(m_body, &body_text)
+        let drift_report = if let Some(ref m_body) = matching_mock_body {
+            crate::model::analyze_contract_drift(m_body, &body_text)
         } else {
-            Vec::new()
+            crate::model::ContractDriftReport {
+                is_drift_detected: false,
+                missing_in_live: Vec::new(),
+                added_in_live: Vec::new(),
+                notes: Vec::new(),
+            }
         };
-        let is_drift_detected = !drift_notes.is_empty();
+        let is_drift_detected = drift_report.is_drift_detected;
+        let drift_notes = drift_report.notes;
+        let breaking_changes_count = drift_report.missing_in_live.len();
+        let additive_changes_count = drift_report.added_in_live.len();
         let mut was_auto_recorded = false;
 
         if resp.status >= 200 && resp.status < 300 {
@@ -798,6 +810,11 @@ where
                                 extract_domain_from_pattern(&wildcard_pattern)
                                     .unwrap_or_else(|| "General".into())
                             });
+                        let (app_ver, env_name) = cfg
+                            .active_session
+                            .as_ref()
+                            .map(|s| (s.app_version.clone(), s.env.clone()))
+                            .unwrap_or_else(|| (String::new(), String::new()));
                         let next_id = cfg.map_rules.iter().map(|r| r.id).max().unwrap_or(0) + 1;
                         let rule = MapRule {
                             id: next_id,
@@ -827,6 +844,8 @@ where
                             empty_status: 200,
                             empty_body,
                             inject_props: std::collections::HashMap::new(),
+                            app_version: app_ver,
+                            env: env_name,
                         };
                         cfg.map_rules.push(rule);
                         cfg.map_enabled = true;
@@ -856,8 +875,13 @@ where
                         } else {
                             format!("UPSTREAM ({} {})", resp.status, reason(resp.status))
                         },
+                        app_version: sess.app_version.clone(),
+                        baseline_version: sess.baseline_version.clone(),
+                        env: sess.env.clone(),
                         is_drift_detected,
                         drift_notes,
+                        breaking_changes_count,
+                        additive_changes_count,
                     });
                 }
             }
@@ -1173,6 +1197,9 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
     if req.method == "POST" && path == "/__proxzy/session/start" {
         let name = json_str_field(&body_text, "name").unwrap_or_else(|| "TestSession".into());
         let folder = json_str_field(&body_text, "folder").unwrap_or_else(|| "General".into());
+        let app_version = json_str_field(&body_text, "app_version").unwrap_or_default();
+        let baseline_version = json_str_field(&body_text, "baseline_version").unwrap_or_default();
+        let env = json_str_field(&body_text, "env").unwrap_or_default();
         let domains = json_str_array(&body_text, "domains");
         let paths = json_str_array(&body_text, "paths");
 
@@ -1182,17 +1209,31 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                     cfg.ssl_allowlist.push(d.clone());
                 }
             }
-            cfg.active_session = Some(TestSession::new(&name, &folder, domains, paths));
+            cfg.active_session = Some(TestSession::new(
+                &name,
+                &folder,
+                &app_version,
+                &baseline_version,
+                &env,
+                domains,
+                paths,
+            ));
             let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
             let _ = ctx.tx.send(ProxyEvent::Log {
                 level: "Info".into(),
-                message: format!("Started Test Session \"{}\" (folder: \"{}\")", name, folder),
+                message: format!(
+                    "Started Test Session \"{}\" (v{} vs baseline v{} @ {})",
+                    name, app_version, baseline_version, env
+                ),
             });
         }
         let json = format!(
-            "{{\"ok\":true,\"session_started\":true,\"name\":\"{}\",\"folder\":\"{}\"}}",
+            "{{\"ok\":true,\"session_started\":true,\"name\":\"{}\",\"folder\":\"{}\",\"app_version\":\"{}\",\"baseline_version\":\"{}\",\"env\":\"{}\"}}",
             escape_json(&name),
-            escape_json(&folder)
+            escape_json(&folder),
+            escape_json(&app_version),
+            escape_json(&baseline_version),
+            escape_json(&env)
         );
         return make_response(200, "OK", headers, json.into_bytes());
     }
@@ -1215,29 +1256,39 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                     .collect::<Vec<_>>()
                     .join(",");
                 format!(
-                    "{{\"timestamp\":\"{}\",\"method\":\"{}\",\"url\":\"{}\",\"status\":{},\"latency_ms\":{},\"source\":\"{}\",\"is_drift_detected\":{},\"drift_notes\":[{}]}}",
+                    "{{\"timestamp\":\"{}\",\"method\":\"{}\",\"url\":\"{}\",\"status\":{},\"latency_ms\":{},\"source\":\"{}\",\"app_version\":\"{}\",\"baseline_version\":\"{}\",\"env\":\"{}\",\"is_drift_detected\":{},\"breaking_changes\":{},\"additive_changes\":{},\"drift_notes\":[{}]}}",
                     escape_json(&c.timestamp),
                     escape_json(&c.method),
                     escape_json(&c.url),
                     c.status,
                     c.latency_ms,
                     escape_json(&c.source),
+                    escape_json(&c.app_version),
+                    escape_json(&c.baseline_version),
+                    escape_json(&c.env),
                     c.is_drift_detected,
+                    c.breaking_changes_count,
+                    c.additive_changes_count,
                     drifts_json
                 )
             })
             .collect::<Vec<_>>()
             .join(",");
         let json = format!(
-            "{{\"ok\":true,\"active\":true,\"name\":\"{}\",\"folder\":\"{}\",\"started_at\":\"{}\",\"total_calls\":{},\"mock_calls\":{},\"upstream_calls\":{},\"auto_recorded_calls\":{},\"drift_warnings\":{},\"calls\":[{}]}}",
+            "{{\"ok\":true,\"active\":true,\"name\":\"{}\",\"folder\":\"{}\",\"app_version\":\"{}\",\"baseline_version\":\"{}\",\"env\":\"{}\",\"started_at\":\"{}\",\"total_calls\":{},\"mock_calls\":{},\"upstream_calls\":{},\"auto_recorded_calls\":{},\"drift_warnings\":{},\"breaking_drifts\":{},\"additive_drifts\":{},\"calls\":[{}]}}",
             escape_json(&sess.name),
             escape_json(&sess.folder),
+            escape_json(&sess.app_version),
+            escape_json(&sess.baseline_version),
+            escape_json(&sess.env),
             escape_json(&sess.started_at),
             sess.total_calls,
             sess.mock_calls,
             sess.upstream_calls,
             sess.auto_recorded_calls,
             sess.drift_warnings,
+            sess.breaking_drifts,
+            sess.additive_drifts,
             calls_json
         );
         return make_response(200, "OK", headers, json.into_bytes());
@@ -1257,28 +1308,38 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                             .collect::<Vec<_>>()
                             .join(",");
                         format!(
-                            "{{\"timestamp\":\"{}\",\"method\":\"{}\",\"url\":\"{}\",\"status\":{},\"latency_ms\":{},\"source\":\"{}\",\"is_drift_detected\":{},\"drift_notes\":[{}]}}",
+                            "{{\"timestamp\":\"{}\",\"method\":\"{}\",\"url\":\"{}\",\"status\":{},\"latency_ms\":{},\"source\":\"{}\",\"app_version\":\"{}\",\"baseline_version\":\"{}\",\"env\":\"{}\",\"is_drift_detected\":{},\"breaking_changes\":{},\"additive_changes\":{},\"drift_notes\":[{}]}}",
                             escape_json(&c.timestamp),
                             escape_json(&c.method),
                             escape_json(&c.url),
                             c.status,
                             c.latency_ms,
                             escape_json(&c.source),
+                            escape_json(&c.app_version),
+                            escape_json(&c.baseline_version),
+                            escape_json(&c.env),
                             c.is_drift_detected,
+                            c.breaking_changes_count,
+                            c.additive_changes_count,
                             drifts_json
                         )
                     })
                     .collect::<Vec<_>>()
                     .join(",");
                 let s = format!(
-                    "{{\"ok\":true,\"session_ended\":true,\"name\":\"{}\",\"folder\":\"{}\",\"total_calls\":{},\"mock_calls\":{},\"upstream_calls\":{},\"auto_recorded_calls\":{},\"drift_warnings\":{},\"calls\":[{}]}}",
+                    "{{\"ok\":true,\"session_ended\":true,\"name\":\"{}\",\"folder\":\"{}\",\"app_version\":\"{}\",\"baseline_version\":\"{}\",\"env\":\"{}\",\"total_calls\":{},\"mock_calls\":{},\"upstream_calls\":{},\"auto_recorded_calls\":{},\"drift_warnings\":{},\"breaking_drifts\":{},\"additive_drifts\":{},\"calls\":[{}]}}",
                     escape_json(&sess.name),
                     escape_json(&sess.folder),
+                    escape_json(&sess.app_version),
+                    escape_json(&sess.baseline_version),
+                    escape_json(&sess.env),
                     sess.total_calls,
                     sess.mock_calls,
                     sess.upstream_calls,
                     sess.auto_recorded_calls,
                     sess.drift_warnings,
+                    sess.breaking_drifts,
+                    sess.additive_drifts,
                     calls_json
                 );
                 let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
@@ -1374,21 +1435,29 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
             .unwrap_or(RuleMethod::Any);
         let name = json_str_field(&body_text, "name")
             .unwrap_or_else(|| format!("UI Test Mock ({})", pattern));
+        let app_version = json_str_field(&body_text, "app_version").unwrap_or_default();
+        let env = json_str_field(&body_text, "env").unwrap_or_default();
 
-        if let Ok(mut cfg) = ctx.config.write() {
+        let (rule_id, fixture_path) = if let Ok(mut cfg) = ctx.config.write() {
             cfg.map_enabled = true;
             if let Some(domain) = extract_domain_from_pattern(&pattern) {
                 if !cfg.ssl_allowlist.iter().any(|d| d.eq_ignore_ascii_case(&domain)) {
                     cfg.ssl_allowlist.push(domain);
                 }
             }
-            if let Some(existing) = cfg.map_rules.iter_mut().find(|r| r.pattern == pattern) {
+            let (id, f_path) = if let Some(existing) = cfg.map_rules.iter_mut().find(|r| r.pattern == pattern) {
                 existing.switch_scenario(scenario);
                 existing.status = status;
                 existing.body = resp_body.clone();
                 existing.method = method;
                 existing.folder = folder;
                 existing.enabled = true;
+                if !app_version.is_empty() {
+                    existing.app_version = app_version.clone();
+                }
+                if !env.is_empty() {
+                    existing.env = env.clone();
+                }
                 for (k, v) in &inject_map {
                     existing.inject_props.insert(k.clone(), v.clone());
                 }
@@ -1406,6 +1475,7 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                         existing.empty_body = resp_body;
                     }
                 }
+                (existing.id, existing.fixture_versioned_path())
             } else {
                 let next_id = cfg.map_rules.iter().map(|r| r.id).max().unwrap_or(0) + 1;
                 let mut rule = MapRule {
@@ -1419,6 +1489,8 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                     enabled: true,
                     active_scenario: scenario,
                     inject_props: inject_map,
+                    app_version: app_version.clone(),
+                    env: env.clone(),
                     ..MapRule::default()
                 };
                 match scenario {
@@ -1435,8 +1507,10 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                         rule.empty_body = resp_body;
                     }
                 }
+                let fix_p = rule.fixture_versioned_path();
                 cfg.map_rules.insert(0, rule);
-            }
+                (next_id, fix_p)
+            };
             let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
             let _ = ctx.tx.send(ProxyEvent::Log {
                 level: "Info".into(),
@@ -1447,13 +1521,20 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                     status
                 ),
             });
-        }
+            (id, f_path)
+        } else {
+            (0, String::new())
+        };
 
         let json = format!(
-            "{{\"ok\":true,\"action\":\"mock_upserted\",\"pattern\":\"{}\",\"scenario\":\"{}\",\"status\":{}}}",
+            "{{\"ok\":true,\"action\":\"mock_upserted\",\"id\":{},\"pattern\":\"{}\",\"scenario\":\"{}\",\"status\":{},\"app_version\":\"{}\",\"env\":\"{}\",\"fixture_path\":\"{}\"}}",
+            rule_id,
             escape_json(&pattern),
             scenario.slug(),
-            status
+            status,
+            escape_json(&app_version),
+            escape_json(&env),
+            escape_json(&fixture_path)
         );
         return make_response(200, "OK", headers, json.into_bytes());
     }
@@ -2388,12 +2469,12 @@ mod proxy_tests {
             assert!(cfg.ssl_allowlist.contains(&"api.trusted.com".to_string()));
         }
 
-        // 8) Test QA Test Session Audit & Summary Endpoints
+        // 8) Test QA Test Session Audit & Summary Endpoints with Version Stamping
         let sess_start_req = HttpRequest {
             method: "POST".into(),
             target: "/__proxzy/session/start".into(),
             headers: vec![("host".into(), "127.0.0.1:9090".into())],
-            body: br#"{"name":"TC_CHECKOUT_01","folder":"Checkout","domains":["*.sample.com"],"paths":["/v1/checkout/*"]}"#.to_vec(),
+            body: br#"{"name":"TC_CHECKOUT_01","folder":"Checkout","app_version":"1.1.0","baseline_version":"1.0.0","env":"preprod","domains":["*.sample.com"],"paths":["/v1/checkout/*"]}"#.to_vec(),
         };
         let sess_start_resp = handle_proxzy_control(&sess_start_req, "/__proxzy/session/start", &ctx);
         assert_eq!(sess_start_resp.status, 200);
@@ -2402,6 +2483,9 @@ mod proxy_tests {
             let sess = cfg.active_session.as_ref().unwrap();
             assert_eq!(sess.name, "TC_CHECKOUT_01");
             assert_eq!(sess.folder, "Checkout");
+            assert_eq!(sess.app_version, "1.1.0");
+            assert_eq!(sess.baseline_version, "1.0.0");
+            assert_eq!(sess.env, "preprod");
             assert!(sess.matches_scope("api.sample.com", "/v1/checkout/pay"));
             assert!(!sess.matches_scope("api.sample.com", "/v1/auth/login"));
         }
@@ -2417,6 +2501,11 @@ mod proxy_tests {
         let summary_text = String::from_utf8_lossy(&sess_summary_resp.body);
         assert!(summary_text.contains("\"TC_CHECKOUT_01\""));
         assert!(summary_text.contains("\"folder\":\"Checkout\""));
+        assert!(summary_text.contains("\"app_version\":\"1.1.0\""));
+        assert!(summary_text.contains("\"baseline_version\":\"1.0.0\""));
+        assert!(summary_text.contains("\"env\":\"preprod\""));
+        assert!(summary_text.contains("\"breaking_drifts\":0"));
+        assert!(summary_text.contains("\"additive_drifts\":0"));
 
         let sess_end_req = HttpRequest {
             method: "POST".into(),
@@ -2426,6 +2515,8 @@ mod proxy_tests {
         };
         let sess_end_resp = handle_proxzy_control(&sess_end_req, "/__proxzy/session/end", &ctx);
         assert_eq!(sess_end_resp.status, 200);
+        let end_text = String::from_utf8_lossy(&sess_end_resp.body);
+        assert!(end_text.contains("\"app_version\":\"1.1.0\""));
         {
             let cfg = ctx.config.read().unwrap();
             assert!(cfg.active_session.is_none());

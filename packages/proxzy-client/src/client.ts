@@ -35,6 +35,8 @@ export interface MockOptions {
   status?: number;
   body?: string | Record<string, unknown>;
   folder?: string;
+  app_version?: string;
+  env?: string;
   success_status?: number;
   success_body?: string | Record<string, unknown>;
   error_status?: number;
@@ -57,7 +59,12 @@ export interface SessionCallAudit {
   status: number;
   latency_ms: number;
   source: string;
+  app_version?: string;
+  baseline_version?: string;
+  env?: string;
   is_drift_detected: boolean;
+  breaking_changes?: number;
+  additive_changes?: number;
   drift_notes: string[];
 }
 
@@ -68,18 +75,26 @@ export interface SessionSummary {
   session_ended?: boolean;
   name: string;
   folder: string;
+  app_version?: string;
+  baseline_version?: string;
+  env?: string;
   started_at?: string;
   total_calls: number;
   mock_calls: number;
   upstream_calls: number;
   auto_recorded_calls: number;
   drift_warnings: number;
+  breaking_drifts?: number;
+  additive_drifts?: number;
   calls: SessionCallAudit[];
 }
 
 export interface SessionStartOptions {
   name: string;
   folder?: string;
+  app_version?: string;
+  baseline_version?: string;
+  env?: 'preprod' | 'staging' | 'prod' | string;
   domains?: string[];
   paths?: string[];
 }
@@ -335,6 +350,9 @@ export class ProxzyClient {
       body: JSON.stringify({
         name: options.name,
         folder: options.folder ?? 'General',
+        app_version: options.app_version ?? '',
+        baseline_version: options.baseline_version ?? '',
+        env: options.env ?? '',
         domains: options.domains ?? [],
         paths: options.paths ?? [],
       }),
