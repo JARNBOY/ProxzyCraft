@@ -20,6 +20,8 @@ Nothing is locked behind accounts, trials, telemetry, or paid tiers &mdash; 100%
 * **Auto-Catch Live 200 OK (Zero-Mock Cold Start):** When starting tests for a new app without existing mock data, ProxzyCraft intercepts live 200 responses from trusted backends, scrubs PII/tokens, derives empty states, and caches them as mock fixtures for instant offline replay.
 * **3-Scenario Map Local State Machine:** Every mock stores `Success (200)`, `Error (500)`, and `Empty (200)` scenario slots. Switch scenarios in **1 click** in the GUI or via `POST /__proxzy/scenario`.
 * **Automatic Security &amp; PII Redaction:** Authorization headers, bearer tokens, passwords, 10-digit phone numbers, and citizen IDs are automatically scrubbed and replaced with safe template placeholders (`{{TOKEN}}`, `{{USERNAME}}`, `{{OTP}}`).
+* **Testcase-Scoped Session Audits:** Enforce that screen play tests only record the exact domains and paths for that use case, keeping unrelated background traffic out of fixtures.
+* **Version-Stamped Regression &amp; Contract Drift:** Detect `BREAKING` (missing keys) vs `ADDITIVE` (new fields) schema drifts between live APIs and versioned mocks across `preprod`, `staging`, and `prod`.
 * **Dynamic Property &amp; User Injection:** Inject test credentials (phone, OTP, user tier) dynamically at test runtime via `POST /__proxzy/inject` without modifying base fixture files.
 * **Selective SSL Proxying:** Intercepts HTTPS **only** for domains in your explicit allowlist (`ssl_allowlist`). Host browsers (Chrome, Safari), Apple Push Services, and Spotify continue without TLS certificate errors.
 * **Zero-Dependency Universal SDK (`@proxzy/client`):** Drop-in TypeScript client in `packages/proxzy-client` for seamless integration into any test harness.
@@ -162,25 +164,39 @@ import { ProxzyClient } from '@proxzy/client';
 
 const proxzy = new ProxzyClient();
 
-test('Verifies Wallet error and recovery states', async () => {
-  // 1. Inject test user parameters dynamically:
+test('Verifies Wallet error recovery and session audit', async () => {
+  // 1. Start testcase-scoped session with release & environment metadata:
+  await proxzy.startSession({
+    name: 'TC_WALLET_01',
+    folder: 'Wallet',
+    app_version: '1.1.0',
+    baseline_version: '1.0.0',
+    env: 'preprod',
+    domains: ['api.example.com'],
+    paths: ['/v1/wallet/*'] // Scopes recording strictly to this screen play
+  });
+
+  // 2. Inject test user credentials dynamically:
   await proxzy.injectUser(
     { folder: 'Auth' },
     { phone: '0812345678', otp: '111111', tier: 'Gold' }
   );
 
-  // 2. Switch Wallet mock to Error scenario:
+  // 3. Switch Wallet mock to Error scenario:
   await proxzy.setFolderScenario('Wallet', 'error');
 
-  // 3. Drive screen via mobile-mcp / MobileWright:
+  // 4. Drive screen via mobile-mcp / MobileWright:
   // await mobile.tap('#wallet-tab');
-
-  // 4. Assert request hit count:
   await proxzy.expectHits('wallet/balance', 1);
 
   // 5. Recover to Success scenario in 1 call:
   await proxzy.setFolderScenario('Wallet', 'success');
   // await mobile.tap('#retry-button');
+
+  // 6. Conclude session and assert audit metrics & contract drift:
+  const summary = await proxzy.endSession();
+  expect(summary.mock_calls).toBeGreaterThan(0);
+  expect(summary.breaking_drifts).toBe(0); // Zero breaking schema changes
 });
 ```
 
