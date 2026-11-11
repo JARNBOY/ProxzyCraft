@@ -1834,6 +1834,22 @@ impl App {
                     });
                 ui.add_space(14.0);
 
+                section_label(ui, "Automation studio");
+                ui.add_space(6.0);
+                Frame::none()
+                    .fill(CARD)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .rounding(11.0)
+                    .inner_margin(Margin::same(14.0))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        truth_row(ui, "Agent Control", "Switch a rule to Success, Error or Empty, inject a body token, open a test session and watch every control-plane call in the feed. External agents use the same loopback endpoints.", ACCENT);
+                        truth_row(ui, "API Test Bench", "Write a request, pin the scenario it expects, add assertions for status, body, JSON key, latency and source, then run one test or the whole suite — each send goes through the real proxy.", GREEN);
+                        truth_row(ui, "Screen Play & MCP", "A play mixes engine steps with device steps. Scenario and Inject run for real; Tap, Type and ExpectVisible are marked simulated because the external harness owns the device. Hit checkpoints wait for real traffic.", PURPLE);
+                        truth_row(ui, "Connector pipeline", "Map Local drawn as six stages, with the exact response, headers, resolved tokens and a scoped cURL to replay the same request.", AMBER);
+                    });
+                ui.add_space(14.0);
+
                 section_label(ui, "The one-minute tour");
                 ui.add_space(6.0);
                 let total = ui.available_width();
@@ -1970,6 +1986,8 @@ impl App {
                         stack_row(ui, "Capture feed", "Real local proxy", "HTTP and HTTPS requests from a simulator, emulator, curl or a Mac app arrive through the proxy on 127.0.0.1.");
                         stack_row(ui, "Live sending", "System curl", "The Composer runs curl in a background worker, so requests and responses are real when the network is available.");
                         stack_row(ui, "Map Local", "In-app rule engine", "First matching method + URL substring wins, then the local status, delay and JSON body are returned.");
+                        stack_row(ui, "Automation studio", "In-app models + system curl", "Agent actions, API tests and screen plays share the same rules; test sends and engine steps go through the real proxy.");
+                        stack_row(ui, "Harness handoff", "Copyable snippets + JSON", "XCTest, Espresso, Playwright and MCP setup text carry the loopback port; suites and plays export as JSON files.");
                         stack_row(ui, "Breakpoints", "Modal editor", "The pause screen edits method, URL, headers and body, then writes the result into the traffic list.");
                         stack_row(ui, "Logs & stats", "In-memory session", "Events, status families, top hosts and latency are computed live from the current captures.");
                         stack_row(ui, "Clipboard & picture", "OS clipboard + PNG", "Copy buttons use the system clipboard; --screenshot saves the window for automatic checking.");
@@ -1985,7 +2003,8 @@ impl App {
                     .inner_margin(Margin::same(14.0))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        truth_row(ui, "Real", "The local HTTP/HTTPS proxy, certificate generation, live captures, Composer sends, clipboard, cURL export, Map Local answers, breakpoint pauses and log updates.", GREEN);
+                        truth_row(ui, "Real", "The local HTTP/HTTPS proxy, certificate generation, live captures, Composer sends, clipboard, cURL export, Map Local answers, breakpoint pauses, API test sends and the engine steps of a screen play.", GREEN);
+                        truth_row(ui, "Simulated", "Tap, Type and ExpectVisible in a screen play are marked simulated: only a real UI harness can touch the device. The app models those steps and waits for actual hits on the engine.", PURPLE);
                         truth_row(ui, "Still sample", "The opening rows are sample calls so the screen is never empty. Clear them from Live Capture to see only traffic you generated.", AMBER);
                         truth_row(ui, "Limit", "HTTPS decryption needs the local certificate trusted on the device. The proxy handles HTTP/1.1 only; it does not install a system-wide VPN profile.", ACCENT);
                     });
@@ -3772,6 +3791,8 @@ impl eframe::App for App {
         self.screenshot_tick(ctx);
         self.poll_send(ctx);
         self.poll_proxy(ctx);
+        self.poll_tests(ctx);
+        self.advance_screen_run(ctx);
         self.poll_proxy_test();
         self.poll_sim_reboot(ctx);
         self.poll_device_scan();
@@ -3872,6 +3893,39 @@ impl eframe::App for App {
                     )
                     .show(ctx, |ui| {
                         self.logs_page(ui, ctx);
+                    });
+            }
+            View::Agent => {
+                egui::CentralPanel::default()
+                    .frame(
+                        Frame::none()
+                            .fill(BG)
+                            .inner_margin(Margin::symmetric(20.0, 16.0)),
+                    )
+                    .show(ctx, |ui| {
+                        self.agent_page(ui, ctx);
+                    });
+            }
+            View::Tests => {
+                egui::CentralPanel::default()
+                    .frame(
+                        Frame::none()
+                            .fill(BG)
+                            .inner_margin(Margin::symmetric(20.0, 16.0)),
+                    )
+                    .show(ctx, |ui| {
+                        self.tests_page(ui, ctx);
+                    });
+            }
+            View::Screen => {
+                egui::CentralPanel::default()
+                    .frame(
+                        Frame::none()
+                            .fill(BG)
+                            .inner_margin(Margin::symmetric(20.0, 16.0)),
+                    )
+                    .show(ctx, |ui| {
+                        self.screen_page(ui, ctx);
                     });
             }
             View::Guide => {

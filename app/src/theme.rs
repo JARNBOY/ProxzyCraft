@@ -479,6 +479,9 @@ pub enum NavIcon {
     Error,
     Pin,
     Live,
+    Agent,
+    Tests,
+    Play,
     Help,
 }
 
@@ -633,6 +636,71 @@ pub fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, kind: NavIcon, 
                 ],
                 stroke,
             );
+        }
+        NavIcon::Agent => {
+            // A small robot head with two antennas.
+            let head = egui::Rect::from_min_max(
+                egui::pos2(r.left() + 2.0, r.top() + 5.0),
+                egui::pos2(r.right() - 2.0, r.bottom() - 1.0),
+            );
+            p.rect_stroke(head, 3.0, stroke);
+            p.circle_filled(egui::pos2(head.left() + 3.5, head.center().y), 1.2, color);
+            p.circle_filled(egui::pos2(head.right() - 3.5, head.center().y), 1.2, color);
+            p.line_segment(
+                [
+                    egui::pos2(head.left() + 3.0, r.top() + 5.0),
+                    egui::pos2(head.left() + 4.5, r.top() + 1.5),
+                ],
+                stroke,
+            );
+            p.line_segment(
+                [
+                    egui::pos2(head.right() - 3.0, r.top() + 5.0),
+                    egui::pos2(head.right() - 4.5, r.top() + 1.5),
+                ],
+                stroke,
+            );
+        }
+        NavIcon::Tests => {
+            // A clipboard with a check mark.
+            p.rect_stroke(
+                egui::Rect::from_min_max(
+                    egui::pos2(r.left() + 1.5, r.top() + 2.0),
+                    egui::pos2(r.right() - 1.5, r.bottom()),
+                ),
+                2.5,
+                stroke,
+            );
+            p.line_segment(
+                [
+                    egui::pos2(r.left() + 5.5, r.center().y + 1.0),
+                    egui::pos2(r.center().x, r.center().y + 4.0),
+                ],
+                stroke,
+            );
+            p.line_segment(
+                [
+                    egui::pos2(r.center().x, r.center().y + 4.0),
+                    egui::pos2(r.right() - 4.0, r.center().y - 3.0),
+                ],
+                stroke,
+            );
+        }
+        NavIcon::Play => {
+            p.rect_stroke(
+                egui::Rect::from_min_max(
+                    egui::pos2(r.left(), r.top() + 1.0),
+                    egui::pos2(r.right(), r.bottom() - 1.0),
+                ),
+                3.0,
+                stroke,
+            );
+            let a = egui::pos2(r.left() + 6.0, r.top() + 5.0);
+            let b = egui::pos2(r.left() + 6.0, r.bottom() - 5.0);
+            let c = egui::pos2(r.right() - 5.0, r.center().y);
+            p.line_segment([a, b], stroke);
+            p.line_segment([a, c], stroke);
+            p.line_segment([b, c], stroke);
         }
         NavIcon::Help => {
             p.circle_stroke(r.center(), 6.5, stroke);

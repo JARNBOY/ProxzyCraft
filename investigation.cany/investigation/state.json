@@ -1,47 +1,52 @@
 {
-  "revision": 17,
+  "revision": 21,
   "brief": {
-    "question": "Rebuild a Proxyman-style network debugging desktop app (traffic list, inspector, cURL/share, repeat, Map Local, Breakpoints, log dashboard) as a Rust + egui POC from the person's description, with no access to the original.",
-    "purpose": "Learning POC for the person: see how capture, mocking, breakpoint editing and logging fit together.",
+    "question": "Extend the Proxzy POC with the automation layer the person asked for: an Agent Control page, a WireMock-style API Test Bench, a Screen Play & MCP page with per-platform port config and response injection, and a Map Local connector pipeline view.",
+    "purpose": "Learning POC for the person: see how Map Local, agent-driven mocks, full API tests and mobile UI-test sync fit together.",
     "targets": [
       "/Applications/Proxyman.app"
     ],
     "constraints": [
       "Clean room: never open, list, read, run or decompile the target",
       "Build only inside app/",
-      "Rust + eframe/egui per instructions"
+      "Rust + eframe/egui; build must succeed and --screenshot must produce a non-blank PNG"
     ],
-    "done_when": "cargo build succeeds, --screenshot produces a non-blank window PNG, and all requested feature areas are present and usable."
+    "done_when": "cargo build and tests succeed, --screenshot works for the new pages, and rebuild_check reports it would pass."
   },
   "plan": [
     {
-      "title": "Keep your chosen request in place while live traffic keeps arriving",
-      "status": "doing",
-      "why": "The person wants a selected call to stay selected instead of jumping to every new response."
+      "title": "Add the shared automation model for tests, screen plays and port targets",
+      "status": "done",
+      "why": "One place for the new screens to read and write test cases and runs."
     },
     {
-      "title": "Add JSON, Raw, XML and HTML choices for the response body",
-      "status": "todo",
-      "why": "The person wants a Postman-style response view, with JSON as the default."
+      "title": "Build the Agent Control screen with scenario switching and injection",
+      "status": "done",
+      "why": "The person wants mocks driven by an agent and wants to watch it happen."
     },
     {
-      "title": "Build the app and fix any errors",
-      "status": "todo",
-      "why": "A working build is needed before checking the screens."
+      "title": "Build the API Test Bench and run real requests through the proxy",
+      "status": "done",
+      "why": "WireMock-style full API testing with pass/fail results."
     },
     {
-      "title": "Take pictures of the pinned selection and the response views",
-      "status": "todo",
-      "why": "Confirm the new controls are visible and the layout still reads clearly."
+      "title": "Build Screen Play & MCP with platform port config and copyable harness setup",
+      "status": "done",
+      "why": "Sync an iOS/Android UI test with response injection on the configured port."
     },
     {
-      "title": "Run the final comparison check and write the summary",
-      "status": "todo",
-      "why": "Make sure the program starts, draws and passes the same checks."
+      "title": "Add the Map Local connector pipeline and wire all new pages into the sidebar",
+      "status": "done",
+      "why": "See how a rule flows from match to response and how tools connect."
+    },
+    {
+      "title": "Build, take pictures, run the final comparison check and write the summary",
+      "status": "done",
+      "why": "Prove the new screens really draw and nothing regressed."
     }
   ],
   "hypotheses": [],
   "findings": [],
-  "handoff": "FINAL: Proxzy POC builds (cargo build), 11 tests pass, and rebuild_check reports build passed plus app-screenshot passed (2880x1662), 'This would pass.' The app now detects booted iOS simulators and Android emulators/phones before any certificate action: app/src/devices.rs scans xcrun simctl and adb on a worker thread, and Live Capture shows a Detected devices card with READY/NOT BOOTED pills and a per-device Connect… button. Clicking opens a confirmation modal (Connect and trust / Certificate only / Cancel); iOS uses the clicked UDID with xcrun simctl keychain <UDID> add-root-cert, restarts that simulator and sets the Mac web proxy, while Android uses the clicked adb serial for 10.0.2.2 or the LAN IP and pushes the CA to /sdcard/Download. The Guide has a new 'Connect real traffic from a simulator or emulator' section with two step-by-step columns, manual commands and troubleshooting. PROXZY_DEMO=connect opens the modal for screenshots. Fresh shots: shots/device-live.png, shots/device-guide.png, shots/device-modal.png. Traps: views.rs and rules_ui.rs are textually included into app.rs, so never add mod declarations; never touch /Applications/Proxyman.app; only build inside app/; never start dev servers or watchers. Next move: none required.",
-  "updated": "2026-11-09T10:49:00Z"
+  "handoff": "DONE: The automation layer is built and verified. The Proxzy POC now has four new pages: Agent Control (rule picker, scenario chips, Live bypass, token injection, session start/end, engine restart, control feed, endpoint contract), API Test Bench (suite editor, method/URL/header/body/inject/scenario fields, header assertion, run-one/run-all through the real loopback proxy via system curl, JSON import/export, WireMock mappings export), Screen Play & MCP (editable engine/device steps, real hit checkpoints, simulated taps clearly marked, iOS/Android/Android-emulator port targets, MCP/Playwright/XCTest/Espresso/Env tabs, play JSON import/export) and the Map Local Connector pipeline (six-stage device→engine→match→scenario→injection→response strip, harness command, match/scenario/injection cards, response preview, tokens, scoped cURL). cargo test: 50 passed, 0 failed. cargo build: succeeds (19 pre-existing warnings). rebuild_check: build passed, app-screenshot passed at 2880×1664, 'This would pass.' Proof shots: app/shots/studio-agent.png, studio-tests.png, studio-tests-run.png (4 mocked API tests passed in 43–78 ms through the real proxy), studio-screen.png, studio-screen-run.png (runner executed engine steps, marked device steps simulated, paused at a hit checkpoint), studio-map-pipeline.png, studio-map-table.png, studio-guide.png. Traps: views.rs, rules_ui.rs and studio_ui.rs are textually included into app.rs, so never add mod declarations for them; studio.rs is a real module in main.rs. Sample Map Local rules stay off by default (map_enabled=false); explicit runs auto-arm, and the Tests page has an Arm engine chip. Screen-play ExpectHit waits for new traffic after the step starts, not cumulative hits. Never touch /Applications/Proxyman.app, build only inside app/, and do not start dev servers or watchers. Open questions about the original Proxyman's exact layout/visuals remain unknowable under clean-room rules. Next move: none required.",
+  "updated": "2026-11-11T02:34:07Z"
 }

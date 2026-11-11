@@ -53,7 +53,27 @@ impl App {
                 );
             });
         });
-        ui.add_space(10.0);
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if chip(ui, "Table", self.map_view == MapViewMode::Table).clicked() {
+                self.map_view = MapViewMode::Table;
+            }
+            if chip(ui, "Connector pipeline", self.map_view == MapViewMode::Pipeline).clicked() {
+                self.map_view = MapViewMode::Pipeline;
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(
+                    RichText::new("the same rules, drawn as the path a request takes")
+                        .size(9.5)
+                        .color(FAINT),
+                );
+            });
+        });
+        ui.add_space(8.0);
+        if self.map_view == MapViewMode::Pipeline {
+            self.map_pipeline(ui, ctx);
+            return;
+        }
 
         // ---- one compact status line, not four big cards ------------------
         let enabled = self.map_rules.iter().filter(|r| r.enabled).count();

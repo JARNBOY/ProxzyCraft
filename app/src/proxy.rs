@@ -74,6 +74,9 @@ pub enum ProxyEvent {
     Log { level: String, message: String },
     Breakpoint(LiveBreakpoint),
     RemoteConfigUpdated(ProxyConfig),
+    /// A call to the in-band control plane (`/__proxzy/*`), surfaced in the
+    /// Agent Control feed so the person can watch an agent drive the engine.
+    Control { method: String, path: String, ok: bool },
     Error(String),
 }
 
@@ -680,6 +683,11 @@ where
         || host.eq_ignore_ascii_case("proxzy.local")
     {
         let resp = handle_proxzy_control(&request, &control_path, &ctx);
+        let _ = ctx.tx.send(ProxyEvent::Control {
+            method: request.method.clone(),
+            path: control_path.split('?').next().unwrap_or(&control_path).to_string(),
+            ok: resp.status < 400,
+        });
         write_response(client, &resp, request.method == "HEAD").await?;
         return Ok(());
     }

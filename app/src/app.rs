@@ -1,6 +1,11 @@
 use crate::devices;
 use crate::model::*;
 use crate::proxy;
+use crate::studio;
+use crate::studio::{
+    ApiTest, ExpectSource, ScreenPlay, ScreenStep, StepKind, StepOutcome, StepStatus,
+    TargetPlatform,
+};
 use crate::theme::*;
 use eframe::egui::{
     self, Align, Align2, Color32, FontId, Frame, Id, Layout, Margin, Rect, RichText, ScrollArea,
@@ -17,7 +22,47 @@ enum View {
     MapLocal,
     Breakpoints,
     Logs,
+    Agent,
+    Tests,
+    Screen,
     Guide,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MapViewMode {
+    Table,
+    Pipeline,
+}
+
+/// One control-plane call, shown in the Agent Control feed so the person can
+/// watch an external agent (or curl) drive the engine.
+#[derive(Clone, Debug)]
+struct ControlEvent {
+    at: String,
+    method: String,
+    path: String,
+    ok: bool,
+}
+
+/// The in-app screen-play runner. It really performs the engine steps and
+/// pauses at a hit checkpoint when no harness traffic has arrived yet.
+struct ScreenRun {
+    play: usize,
+    step: usize,
+    step_entered: Instant,
+    waiting: bool,
+    /// Hits on the current rule when this step began, so a checkpoint waits for
+    /// new traffic rather than pre-seeded sample hits.
+    hit_base: u32,
+    hit_armed: bool,
+    outcomes: Vec<StepOutcome>,
+    finished: bool,
+}
+
+/// A pending API-test request and the index it belongs to.
+struct TestSend {
+    index: usize,
+    rx: Receiver<SendOutcome>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -335,6 +380,35 @@ pub struct App {
     /// The person declined the one-click fix once; keep the quiet banner
     /// instead of nagging with the modal on every frame.
     stale_proxy_dismissed: bool,
+    // ---- automation studio -------------------------------------------------
+    map_view: MapViewMode,
+    tests: Vec<ApiTest>,
+    test_selected: usize,
+    test_target: TargetPlatform,
+    test_queue: Vec<usize>,
+    test_send: Option<TestSend>,
+    test_export: String,
+    test_import: String,
+    test_io: bool,
+    test_headers: String,
+    test_injects: String,
+    agent_feed: Vec<ControlEvent>,
+    agent_folder: Option<String>,
+    agent_rule: Option<u64>,
+    agent_inject_key: String,
+    agent_inject_value: String,
+    agent_session_name: String,
+    agent_session_env: String,
+    agent_session_version: String,
+    agent_port_input: String,
+    agent_auto_record_note: String,
+    screen_plays: Vec<ScreenPlay>,
+    screen_selected: usize,
+    screen_target: TargetPlatform,
+    screen_run: Option<ScreenRun>,
+    screen_tab: usize,
+    screen_export: String,
+    screen_import: String,
 }
 
 impl App {
@@ -342,6 +416,7 @@ impl App {
         cc: &eframe::CreationContext<'_>,
         screenshot_path: Option<String>,
         screenshot_frames: u32,
+        start_port: u16,
     ) -> Self {
         configure(&cc.egui_ctx);
         let (method, url, headers, body) = composer_preset_graphql();
@@ -349,16 +424,20 @@ impl App {
             "live" | "capture" | "proxy" => View::Live,
             "composer" => View::Composer,
             "map" | "map-local" => View::MapLocal,
+            "map-pipeline" => View::MapLocal,
             "breakpoints" => View::Breakpoints,
             "logs" => View::Logs,
+            "agent" | "agent-control" => View::Agent,
+            "tests" | "test-bench" => View::Tests,
+            "screen" | "screen-play" | "mcp" => View::Screen,
             "guide" => View::Guide,
             _ => View::Traffic,
         };
         let (proxy_tx, proxy_rx) = channel();
         let mut proxy_handle = None;
         let mut proxy_error = None;
-        let mut proxy_port = 9090u16;
-        for candidate in [9090u16, 9091, 9092, 9093] {
+        let mut proxy_port = start_port.max(1);
+        for candidate in [proxy_port, 9090, 9091, 9092, 9093] {
             match proxy::start(candidate, proxy_tx.clone()) {
                 Ok(handle) => {
                     proxy_port = handle.port;
@@ -450,7 +529,40 @@ impl App {
             stale_proxy: None,
             stale_proxy_scan: None,
             stale_proxy_dismissed: false,
+            map_view: if std::env::var("PROXZY_VIEW").as_deref() == Ok("map-pipeline") {
+                MapViewMode::Pipeline
+            } else {
+                MapViewMode::Table
+            },
+            tests: studio::sample_tests(),
+            test_selected: 0,
+            test_target: TargetPlatform::Mac,
+            test_queue: Vec::new(),
+            test_send: None,
+            test_export: String::new(),
+            test_import: String::new(),
+            test_io: false,
+            test_headers: String::new(),
+            test_injects: String::new(),
+            agent_feed: Vec::new(),
+            agent_folder: None,
+            agent_rule: None,
+            agent_inject_key: "USERNAME".into(),
+            agent_inject_value: "qa.agent".into(),
+            agent_session_name: "TC_WALLET_01".into(),
+            agent_session_env: "preprod".into(),
+            agent_session_version: "1.1.0".into(),
+            agent_port_input: proxy_port.to_string(),
+            agent_auto_record_note: String::new(),
+            screen_plays: studio::sample_screen_plays(),
+            screen_selected: 0,
+            screen_target: TargetPlatform::Mac,
+            screen_run: None,
+            screen_tab: 2,
+            screen_export: String::new(),
+            screen_import: String::new(),
         };
+        app.agent_rule = app.map_rules.first().map(|r| r.id);
         app.sync_proxy_config();
         app.request_device_scan();
         app.request_stale_proxy_scan();
@@ -603,6 +715,20 @@ impl App {
                     self.map_rules = cfg.map_rules;
                     self.ssl_proxying_enabled = cfg.ssl_proxying_enabled;
                     self.ssl_allowlist = cfg.ssl_allowlist;
+                }
+                proxy::ProxyEvent::Control { method, path, ok } => {
+                    self.agent_feed.insert(
+                        0,
+                        ControlEvent {
+                            at: now_stamp(),
+                            method,
+                            path,
+                            ok,
+                        },
+                    );
+                    if self.agent_feed.len() > 24 {
+                        self.agent_feed.truncate(24);
+                    }
                 }
                 proxy::ProxyEvent::Error(message) => {
                     self.proxy_error = Some(message.clone());
@@ -2559,7 +2685,7 @@ impl App {
         let headers2 = headers.clone();
         let body2 = body.clone();
         std::thread::spawn(move || {
-            let outcome = run_curl(&method2, &url2, &headers2, &body2);
+            let outcome = run_curl(&method2, &url2, &headers2, &body2, None);
             let _ = tx.send(outcome);
             ctx2.request_repaint();
         });
@@ -3003,7 +3129,37 @@ impl App {
             }
         }
 
-        let remaining = (ui.available_height() - 162.0).max(10.0);
+        ui.add_space(12.0);
+        section_label(ui, "Automation");
+        ui.add_space(3.0);
+        let automation = [
+            (
+                View::Agent,
+                "Agent Control",
+                NavIcon::Agent,
+                Some(self.map_rules.iter().filter(|r| r.enabled).count()),
+            ),
+            (
+                View::Tests,
+                "API Test Bench",
+                NavIcon::Tests,
+                Some(self.tests.len()),
+            ),
+            (
+                View::Screen,
+                "Screen Play & MCP",
+                NavIcon::Play,
+                Some(self.screen_plays.len()),
+            ),
+        ];
+        for (view, label, icon, count) in automation {
+            let resp = nav_row(ui, icon, label, count, self.view == view);
+            if resp.clicked() {
+                self.view = view;
+            }
+        }
+
+        let remaining = (ui.available_height() - 150.0).max(6.0);
         ui.add_space(remaining);
         Frame::none()
             .fill(CARD)
@@ -4473,6 +4629,7 @@ fn run_curl(
     url: &str,
     headers: &[(String, String)],
     body: &str,
+    proxy: Option<(u16, Option<std::path::PathBuf>)>,
 ) -> SendOutcome {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -4497,6 +4654,19 @@ fn run_curl(
         .arg(&out_path)
         .arg("-w")
         .arg("%{http_code}");
+    if let Some((port, ca_path)) = &proxy {
+        cmd.arg("-x").arg(format!("http://127.0.0.1:{}", port));
+        if url.starts_with("https://") {
+            match ca_path {
+                Some(path) if path.exists() => {
+                    cmd.arg("--cacert").arg(path);
+                }
+                _ => {
+                    cmd.arg("-k");
+                }
+            }
+        }
+    }
     for (k, v) in headers {
         cmd.arg("-H").arg(format!("{}: {}", k, v));
     }
@@ -4941,3 +5111,4 @@ mod helper_tests {
 
 include!("views.rs");
 include!("rules_ui.rs");
+include!("studio_ui.rs");

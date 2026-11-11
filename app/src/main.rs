@@ -2,6 +2,7 @@ mod app;
 mod devices;
 mod model;
 mod proxy;
+mod studio;
 mod theme;
 
 fn main() -> eframe::Result<()> {
@@ -92,6 +93,7 @@ fn main() -> eframe::Result<()> {
                 cc,
                 screenshot_path.clone(),
                 screenshot_frames,
+                port,
             )))
         }),
     )

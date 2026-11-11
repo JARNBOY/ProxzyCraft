@@ -2231,6 +2231,133 @@ pub fn sample_map_rules() -> Vec<MapRule> {
             success_body: rec_body,
             ..MapRule::default()
         },
+        MapRule {
+            id: 4,
+            name: "Wallet balance".into(),
+            folder: "Wallet".into(),
+            pattern: "/v1/wallet*".into(),
+            method: RuleMethod::Get,
+            status: 200,
+            content_type: "application/json".into(),
+            delay_ms: 14,
+            body: r#"{
+  "balance": 128.50,
+  "currency": "THB",
+  "user": "{{USERNAME}}",
+  "updated_at": "2026-03-14T10:40:20Z"
+}"#
+            .into(),
+            graphql_name: String::new(),
+            enabled: true,
+            hits: 4,
+            active_scenario: MockScenario::Success,
+            success_status: 200,
+            success_body: r#"{
+  "balance": 128.50,
+  "currency": "THB",
+  "user": "{{USERNAME}}",
+  "updated_at": "2026-03-14T10:40:20Z"
+}"#
+            .into(),
+            error_status: 500,
+            error_body: r#"{
+  "error": "wallet_unavailable",
+  "message": "Balance service is offline.",
+  "code": "WALLET_500"
+}"#
+            .into(),
+            empty_status: 200,
+            empty_body: r#"{
+  "balance": 0,
+  "currency": "THB",
+  "items": []
+}"#
+            .into(),
+            inject_props: [("USERNAME".to_string(), "papon".to_string())]
+                .into_iter()
+                .collect(),
+            ..MapRule::default()
+        },
+        MapRule {
+            id: 5,
+            name: "Counter increment".into(),
+            folder: "Agent".into(),
+            pattern: "/v1/counter".into(),
+            method: RuleMethod::Post,
+            status: 201,
+            content_type: "application/json".into(),
+            delay_ms: 8,
+            body: r#"{
+  "count": 1,
+  "delta": 1,
+  "user": "{{USERNAME}}"
+}"#
+            .into(),
+            graphql_name: String::new(),
+            enabled: true,
+            hits: 1,
+            active_scenario: MockScenario::Success,
+            success_status: 201,
+            success_body: r#"{
+  "count": 1,
+  "delta": 1,
+  "user": "{{USERNAME}}"
+}"#
+            .into(),
+            error_status: 429,
+            error_body: r#"{
+  "error": "rate_limited",
+  "message": "Too many counter increments."
+}"#
+            .into(),
+            empty_status: 200,
+            empty_body: r#"{
+  "count": 0,
+  "items": []
+}"#
+            .into(),
+            ..MapRule::default()
+        },
+        MapRule {
+            id: 6,
+            name: "Auth session".into(),
+            folder: "Auth".into(),
+            pattern: "/v1/auth*".into(),
+            method: RuleMethod::Post,
+            status: 200,
+            content_type: "application/json".into(),
+            delay_ms: 22,
+            body: r#"{
+  "token": "{{TOKEN}}",
+  "user": { "phone": "{{phone}}", "otp_verified": true },
+  "tier": "Gold"
+}"#
+            .into(),
+            graphql_name: String::new(),
+            enabled: true,
+            hits: 0,
+            active_scenario: MockScenario::Success,
+            success_status: 200,
+            success_body: r#"{
+  "token": "{{TOKEN}}",
+  "user": { "phone": "{{phone}}", "otp_verified": true },
+  "tier": "Gold"
+}"#
+            .into(),
+            error_status: 401,
+            error_body: r#"{
+  "error": "invalid_otp",
+  "message": "The one-time code has expired."
+}"#
+            .into(),
+            empty_status: 200,
+            empty_body: r#"{
+  "token": "",
+  "user": {}
+}"#
+            .into(),
+            ..MapRule::default()
+        },
     ]
 }
 
