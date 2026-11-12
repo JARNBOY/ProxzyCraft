@@ -1,15 +1,15 @@
 {
   "id": "unk_8034a1a96c6552af",
-  "revision": 2,
+  "revision": 3,
   "question": "What exactly do the three attached pictures show in the areas the person finds hard (Map Local, Breakpoint, wildcard)?",
   "severity": "medium",
   "domain": "general",
-  "status": "investigating",
+  "status": "resolved",
   "probes": [
     "Read the three attachments with image vision",
     "OCR the text and note the controls and their order"
   ],
   "evidence_for": [],
   "evidence_against": [],
-  "resolution": "OCR of the attachments shows: picture 2 is the Map Local rule table; picture 3 is the Map Local editor with wildcard, subpaths, GraphQL query name and delay controls; picture 1 is the main traffic window. The build now follows that table-plus-editor pattern. Exact pixel colours and spacing still cannot be checked without vision, so this is not fully resolved."
+  "resolution": "The four attachments were read with vision: picture 1 is the main traffic window, picture 2 the Map Local rule table, picture 3 the Map Local editor (wildcard, subpaths, GraphQL query name, delay), picture 4 the inspector with copy/share actions. The build follows that table-plus-editor pattern and the inspector action row; exact pixel colours and spacing belong to the separate visual unknown."
 }

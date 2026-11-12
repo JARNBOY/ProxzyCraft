@@ -1,0 +1,2 @@
+ts	phase	decision	why	evidence	result
+2026-11-11T04:35:17Z	audit-baseline	auditing existing uncommitted CraftAnything changes against Tickets 01-06 before finishing	user approved /implement-spec plan and asked to finish, understand, diagram, update README, show-me-your-work, teach, commit and push	plan_public_oss_real_device_and_implement_spec.md; git log -1 12ac4a7	54 tests pass; profile warning in app/Cargo.toml; clean-room strings & client.ts & docs still incomplete

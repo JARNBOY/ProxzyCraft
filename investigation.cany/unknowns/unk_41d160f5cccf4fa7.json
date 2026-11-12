@@ -1,15 +1,15 @@
 {
   "id": "unk_41d160f5cccf4fa7",
-  "revision": 2,
+  "revision": 4,
   "question": "Should the POC intercept real system-wide HTTPS traffic, or is a self-contained demo feed plus a real HTTP composer enough for learning?",
-  "severity": "high",
+  "severity": "low",
   "domain": "scope",
-  "status": "investigating",
+  "status": "resolved",
   "probes": [
     "Person confirms the POC scope",
     "A capture of Proxyman's certificate/proxy setup screen"
   ],
   "evidence_for": [],
   "evidence_against": [],
-  "resolution": "Still open; no capture of the original's certificate/proxy setup was available. For this POC I built the safer learning version: a seeded demo capture feed plus a Composer that really sends through system curl, real local Map Local answers and a breakpoint editor. System-wide HTTPS interception is not installed, so other apps are not captured yet. This is a scope estimate, not a match to the original."
+  "resolution": "Answered for the product: system-wide HTTPS is an explicit opt-in (Full HTTPS catch switch or --full-catch), while the safe default keeps a raw tunnel and bypasses protected Apple/Google services. The simulator silence was a routing/repaint problem, not a missing interceptor; Capture Check proves a real request arrives, reads the inherited Mac route, and offers a confirmed Use Mac proxy action instead of changing settings silently."
 }

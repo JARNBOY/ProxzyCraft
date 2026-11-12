@@ -20,7 +20,7 @@
   },
   "keywords": [
     "proxzy",
-    "proxyman",
+    "http-proxy",
     "wiremock",
     "mock",
     "mitm",

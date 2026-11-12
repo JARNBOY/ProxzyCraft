@@ -30,6 +30,51 @@ impl App {
             .and_then(|cfg| cfg.active_session.clone())
     }
 
+    fn target_uses_lan(&self, platform: TargetPlatform) -> bool {
+        matches!(platform, TargetPlatform::IosDevice)
+            || (platform == TargetPlatform::AndroidDevice
+                && self.android_transport == AndroidTransport::WifiLan)
+    }
+
+    fn screen_target_host(&self) -> String {
+        let lan_ip = if self.lan_enabled && !self.lan_ip.trim().is_empty() {
+            self.lan_ip.as_str()
+        } else {
+            "127.0.0.1"
+        };
+        studio::host_for_target(self.screen_target, lan_ip, self.android_transport)
+    }
+
+    fn screen_target_token(&self) -> Option<String> {
+        let token = self.control_token.trim();
+        if (self.lan_enabled || self.target_uses_lan(self.screen_target)) && !token.is_empty() {
+            Some(token.to_string())
+        } else {
+            None
+        }
+    }
+
+    fn target_bridge_command(&self, platform: TargetPlatform, port: u16) -> Option<String> {
+        studio::bridge_command_for(platform, port, self.android_transport)
+    }
+
+    fn android_transport_chips(&mut self, ui: &mut Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new("ANDROID LINK")
+                    .size(8.5)
+                    .strong()
+                    .color(FAINT),
+            );
+            for transport in AndroidTransport::ALL {
+                let active = self.android_transport == transport;
+                if chip(ui, transport.label(), active).clicked() {
+                    self.android_transport = transport;
+                }
+            }
+        });
+    }
+
     fn set_rule_scenario(&mut self, ctx: &egui::Context, id: u64, scenario: MockScenario) {
         let name = if let Some(rule) = self.map_rules.iter_mut().find(|r| r.id == id) {
             rule.switch_scenario(scenario);
@@ -256,8 +301,10 @@ impl App {
         });
         ui.add_space(10.0);
 
+        let hook_offset = self.agent_hook_offset();
         ScrollArea::vertical()
             .auto_shrink([false, false])
+            .vertical_scroll_offset(hook_offset)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     stat_box(
@@ -315,6 +362,8 @@ impl App {
                 self.agent_feed_card(ui);
                 ui.add_space(10.0);
                 self.agent_endpoint_card(ui, ctx, port);
+                ui.add_space(10.0);
+                self.agent_ide_card(ui, ctx, port);
                 ui.add_space(16.0);
             });
     }
@@ -686,13 +735,39 @@ impl App {
             ui.horizontal_wrapped(|ui| {
                 for platform in TargetPlatform::ALL {
                     let active = self.screen_target == platform;
-                    if chip(ui, platform.badge(), active).clicked() {
+                    if chip(ui, platform.badge(), active)
+                        .on_hover_text(format!("target id: {}", platform.slug()))
+                        .clicked()
+                    {
                         self.screen_target = platform;
                     }
                 }
             });
+            if self.screen_target == TargetPlatform::AndroidDevice {
+                ui.add_space(4.0);
+                self.android_transport_chips(ui);
+            }
             ui.add_space(4.0);
-            let bridge = self.screen_target.bridge_command(self.proxy_port);
+            let needs_lan = self.target_uses_lan(self.screen_target);
+            let mut turn_on_lan = false;
+            if needs_lan && !self.lan_enabled {
+                ui.horizontal(|ui| {
+                    pill(
+                        ui,
+                        "LAN OFF",
+                        AMBER,
+                        Color32::from_rgba_unmultiplied(255, 181, 84, 18),
+                    );
+                    if secondary_button(ui, "Turn on LAN access").clicked() {
+                        turn_on_lan = true;
+                    }
+                });
+                ui.add_space(3.0);
+            }
+            if turn_on_lan {
+                self.set_lan_enabled(ctx, true);
+            }
+            let bridge = self.target_bridge_command(self.screen_target, self.proxy_port);
             match bridge {
                 Some(command) => {
                     ui.horizontal(|ui| {
@@ -710,10 +785,23 @@ impl App {
                     studio_note(ui, self.screen_target.note());
                 }
                 None => {
-                    studio_note(
-                        ui,
-                        "This target sends traffic straight to the loopback port — nothing to bridge.",
-                    );
+                    let host = self.screen_target_host();
+                    if needs_lan && self.lan_enabled {
+                        studio_note(
+                            ui,
+                            &format!(
+                                "Point the phone HTTP proxy at {}:{} and send X-Proxzy-Control from test harnesses.",
+                                host, self.proxy_port
+                            ),
+                        );
+                    } else if needs_lan {
+                        studio_note(ui, self.screen_target.note());
+                    } else {
+                        studio_note(
+                            ui,
+                            "This target sends traffic straight to the loopback port — nothing to bridge.",
+                        );
+                    }
                 }
             }
         });
@@ -814,6 +902,15 @@ impl App {
             .map(|r| r.name.clone())
             .unwrap_or_else(|| "Wallet balance".to_string());
         studio_card(ui, |ui| {
+            let host = self.screen_target_host();
+            let token = self.screen_target_token();
+            let token_ref = token.as_deref();
+            let health_cmd = studio::health_curl_for(&host, port, token_ref);
+            let scenario_cmd =
+                studio::scenario_curl_for(&host, port, &target, "error", token_ref);
+            let inject_cmd =
+                studio::inject_curl_for(&host, port, &target, "USERNAME", "qa.agent", token_ref);
+
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new("Give the agent a command")
@@ -823,7 +920,7 @@ impl App {
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if secondary_button(ui, "Health").clicked() {
-                        self.copy(ctx, studio::health_curl(port), "Health check copied");
+                        self.copy(ctx, health_cmd.clone(), "Health check copied");
                     }
                 });
             });
@@ -834,23 +931,13 @@ impl App {
             );
             ui.add_space(7.0);
             form_label(ui, "HEALTH");
-            code_block(ui, &studio::health_curl(port), 52.0, false);
+            code_block(ui, &health_cmd, 52.0, false);
             ui.add_space(5.0);
             form_label(ui, "SWITCH SCENARIO");
-            code_block(
-                ui,
-                &studio::scenario_curl(port, &target, "error"),
-                74.0,
-                false,
-            );
+            code_block(ui, &scenario_cmd, 74.0, false);
             ui.add_space(5.0);
             form_label(ui, "INJECT A PROPERTY");
-            code_block(
-                ui,
-                &studio::inject_curl(port, &target, "USERNAME", "qa.agent"),
-                74.0,
-                false,
-            );
+            code_block(ui, &inject_cmd, 74.0, false);
         });
     }
 
@@ -939,7 +1026,21 @@ impl App {
                                     .truncate(),
                                 );
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    dot(ui, GREEN, 5.0);
+                                    if event.ok {
+                                        pill(
+                                            ui,
+                                            "OK",
+                                            GREEN,
+                                            Color32::from_rgba_unmultiplied(61, 214, 149, 18),
+                                        );
+                                    } else {
+                                        pill(
+                                            ui,
+                                            "403",
+                                            RED,
+                                            Color32::from_rgba_unmultiplied(255, 107, 107, 18),
+                                        );
+                                    }
                                 });
                             });
                         });
@@ -1024,6 +1125,96 @@ impl App {
         });
     }
 
+    // ---------------------------------------------------------------------
+    // Agent Control — IDE hook
+    // ---------------------------------------------------------------------
+
+    fn agent_ide_card(&mut self, ui: &mut Ui, ctx: &egui::Context, port: u16) {
+        let mut copy: Option<(String, &'static str)> = None;
+        studio_card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Hook an IDE").size(13.0).strong().color(TEXT));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    pill(
+                        ui,
+                        "PLAIN TEXT",
+                        CYAN,
+                        Color32::from_rgba_unmultiplied(88, 196, 221, 16),
+                    );
+                });
+            });
+            ui.add_space(2.0);
+            studio_note(
+                ui,
+                "Pick the agent you use. Paste its brief into the rules file it reads, and that agent can drive this engine and verify its own calls.",
+            );
+            ui.add_space(8.0);
+
+            let clients = [
+                ("Cursor", ".cursor/rules/proxzy.mdc", "project rule"),
+                ("VS Code", ".github/copilot-instructions.md", "workspace instructions"),
+                ("Claude Code", "CLAUDE.md", "project memory"),
+                ("JetBrains", ".junie/guidelines.md", "project guidelines"),
+            ];
+            for (name, place, kind) in clients {
+                ui.horizontal(|ui| {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(96.0, 18.0),
+                        Layout::left_to_right(Align::Center),
+                        |ui| {
+                            ui.label(RichText::new(name).size(10.5).strong().color(TEXT));
+                        },
+                    );
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(230.0, 18.0),
+                        Layout::left_to_right(Align::Center),
+                        |ui| {
+                            ui.label(RichText::new(place).font(mono(9.0)).color(CYAN));
+                        },
+                    );
+                    ui.label(RichText::new(kind).size(9.0).color(FAINT));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if secondary_button(ui, "Copy brief").clicked() {
+                            copy = Some((
+                                ide_brief(port, name, place),
+                                "IDE brief copied — paste it into the rules file",
+                            ));
+                        }
+                    });
+                });
+                ui.add_space(3.0);
+            }
+
+            ui.add_space(4.0);
+            hsep(ui);
+            ui.add_space(7.0);
+            let health = format!("curl -s http://127.0.0.1:{}/__proxzy/health", port);
+            ui.horizontal(|ui| {
+                pill(
+                    ui,
+                    "VERIFY THE HOOK",
+                    GREEN,
+                    Color32::from_rgba_unmultiplied(61, 214, 149, 16),
+                );
+                ui.label(
+                    RichText::new("Ask the agent to run this first; its call lands in the feed below.")
+                        .size(9.5)
+                        .color(MUTED),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if secondary_button(ui, "Copy check").clicked() {
+                        copy = Some((health.clone(), "Health check copied"));
+                    }
+                });
+            });
+            ui.add_space(4.0);
+            code_block(ui, &health, 26.0, false);
+        });
+        if let Some((text, message)) = copy {
+            self.copy(ctx, text, message);
+        }
+    }
+
     // =====================================================================
     // API Test Bench
     // =====================================================================
@@ -1086,12 +1277,10 @@ impl App {
                 if chip(ui, "JSON", self.test_io).clicked() {
                     toggle_io = true;
                 }
-                if !self.map_enabled {
-                    if chip(ui, "Arm engine", false).clicked() {
-                        self.map_enabled = true;
-                        self.sync_proxy_config();
-                        self.log(Level::Info, "Test Bench", "Map Local engine armed");
-                    }
+                if !self.map_enabled && chip(ui, "Arm engine", false).clicked() {
+                    self.map_enabled = true;
+                    self.sync_proxy_config();
+                    self.log(Level::Info, "Test Bench", "Map Local engine armed");
                 }
             });
         });
@@ -1114,7 +1303,15 @@ impl App {
                     .font(mono(9.0))
                     .color(FAINT),
             );
-            if let Some(note) = self.test_target.bridge_command(port) {
+            if self.test_target == TargetPlatform::AndroidDevice {
+                for transport in AndroidTransport::ALL {
+                    let active = self.android_transport == transport;
+                    if chip(ui, transport.label(), active).clicked() {
+                        self.android_transport = transport;
+                    }
+                }
+            }
+            if let Some(note) = self.target_bridge_command(self.test_target, port) {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if secondary_button(ui, "Copy bridge").clicked() {
                         self.copy(ctx, note, "Bridge command copied");
@@ -2023,7 +2220,9 @@ impl App {
                 ui.add_space(12.0);
 
                 let gap = 14.0;
-                let total = ui.available_width();
+                // Keep the third column inside the window: the play editor and
+                // the snippet box both grow with their content.
+                let total = (ui.available_width() - 20.0).max(700.0);
                 let left = ((total - gap * 2.0) * 0.24).clamp(220.0, 280.0);
                 let middle = ((total - gap * 2.0) * 0.42).clamp(360.0, 470.0);
                 let right = (total - left - middle - gap * 2.0).max(280.0);
@@ -2212,7 +2411,10 @@ impl App {
                 ui.label(RichText::new("TARGET").size(8.5).strong().color(FAINT));
                 for platform in TargetPlatform::ALL {
                     let active = self.screen_target == platform;
-                    if chip(ui, platform.badge(), active).clicked() {
+                    if chip(ui, platform.badge(), active)
+                        .on_hover_text(format!("target id: {}", platform.slug()))
+                        .clicked()
+                    {
                         self.screen_target = platform;
                     }
                 }
@@ -2403,12 +2605,18 @@ impl App {
         let tabs = ["Env", "Playwright", "MCP", "XCTest", "Espresso"];
         let mut copy_snippet = false;
         let mut open_agent = false;
+        let mut turn_on_lan = false;
+        let host = self.screen_target_host();
+        let token = self.screen_target_token();
+        let token_ref = token.as_deref();
+        let bridge = self.target_bridge_command(self.screen_target, port);
+        let needs_lan = self.target_uses_lan(self.screen_target);
         let snippet = match self.screen_tab {
-            0 => studio::env_block(port, &play.name),
-            2 => studio::mcp_snippet(port, &play.name),
-            3 => studio::xctest_snippet(port, &play.name),
-            4 => studio::espresso_snippet(port, &play.name),
-            _ => studio::playwright_snippet(port, &play.name),
+            0 => studio::env_block_for(&host, port, &play.name, token_ref),
+            2 => studio::mcp_snippet_for(&host, port, &play.name, token_ref),
+            3 => studio::xctest_snippet_for(&host, port, &play.name, token_ref),
+            4 => studio::espresso_snippet_for(&host, port, &play.name, token_ref),
+            _ => studio::playwright_snippet_for(&host, port, &play.name),
         };
 
         studio_card(ui, |ui| {
@@ -2431,19 +2639,36 @@ impl App {
                     ui,
                     116.0,
                     "BRIDGE",
-                    if self.screen_target.bridge_command(port).is_some() {
+                    if bridge.is_some() {
                         "NEEDED"
+                    } else if needs_lan {
+                        if self.lan_enabled { "LAN READY" } else { "LAN OFF" }
                     } else {
                         "DIRECT"
                     },
-                    if self.screen_target.bridge_command(port).is_some() {
+                    if bridge.is_some() {
+                        AMBER
+                    } else if needs_lan && !self.lan_enabled {
                         AMBER
                     } else {
                         GREEN
                     },
                 );
             });
-            if let Some(command) = self.screen_target.bridge_command(port) {
+            if self.screen_target == TargetPlatform::AndroidDevice {
+                ui.add_space(5.0);
+                self.android_transport_chips(ui);
+            }
+            if needs_lan && !self.lan_enabled {
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    studio_note(ui, "LAN access is off; physical Wi-Fi targets need LAN enabled.");
+                    if secondary_button(ui, "Turn on LAN access").clicked() {
+                        turn_on_lan = true;
+                    }
+                });
+            }
+            if let Some(command) = bridge.clone() {
                 ui.add_space(5.0);
                 ui.horizontal(|ui| {
                     ui.label(
@@ -2491,11 +2716,11 @@ impl App {
                 .find(|s| matches!(s.kind, StepKind::Scenario | StepKind::Inject))
             {
                 let command = if step.kind == StepKind::Scenario {
-                    studio::scenario_curl(port, &step.action, &step.value)
+                    studio::scenario_curl_for(&host, port, &step.action, &step.value, token_ref)
                 } else {
                     let (key, value) = studio::parse_inject(&step.value)
                         .unwrap_or_else(|| ("KEY".into(), step.value.clone()));
-                    studio::inject_curl(port, &step.action, &key, &value)
+                    studio::inject_curl_for(&host, port, &step.action, &key, &value, token_ref)
                 };
                 code_block(ui, &command, 72.0, false);
                 studio_note(ui, "This is the same command the play runs locally.");
@@ -2504,6 +2729,9 @@ impl App {
             }
         });
 
+        if turn_on_lan {
+            self.set_lan_enabled(ctx, true);
+        }
         if copy_snippet {
             self.copy(ctx, snippet, "Harness snippet copied");
         }
@@ -2542,7 +2770,7 @@ impl App {
         self.toast_now(ctx, "Play started — engine steps run, device steps are simulated");
     }
 
-    fn advance_screen_run(&mut self, ctx: &egui::Context) {
+    fn advance_screen_run(&mut self, _ctx: &egui::Context) {
         let Some(run) = self.screen_run.as_ref() else {
             return;
         };
@@ -3114,11 +3342,15 @@ impl App {
                 });
             });
             ui.add_space(4.0);
+            if self.screen_target == TargetPlatform::AndroidDevice {
+                self.android_transport_chips(ui);
+                ui.add_space(3.0);
+            }
             studio_note(
                 ui,
-                "The app or browser under test must send traffic to the loopback engine. Mobile targets need the bridge command.",
+                "The app or browser under test must send traffic to the engine. Mobile targets use the bridge or LAN host.",
             );
-            if let Some(command) = self.screen_target.bridge_command(self.proxy_port) {
+            if let Some(command) = self.target_bridge_command(self.screen_target, self.proxy_port) {
                 ui.add_space(3.0);
                 ui.horizontal(|ui| {
                     ui.label(
@@ -3636,4 +3868,47 @@ fn pipeline_arrow(ui: &mut Ui) {
             Stroke::new(1.0, BORDER),
         );
     });
+}
+
+/// The copy-ready brief an IDE agent reads before it drives the proxy engine.
+fn ide_brief(port: u16, ide: &str, place: &str) -> String {
+    format!(
+        "# Proxzy engine brief — {ide}\n\n\
+         Paste into: {place}\n\n\
+         Proxy: http://127.0.0.1:{port}\n\
+         Control plane: http://127.0.0.1:{port}/__proxzy\n\
+         CA for simulators: ~/Library/Application Support/Proxzy/proxzy-ca.pem\n\n\
+         Use this local engine for every mocked, replayed or verified call:\n\
+         1. GET /__proxzy/health — confirm the engine is ready, then note the port and rule count.\n\
+         2. POST /__proxzy/scenario {{\"pattern\":\"Wallet balance\",\"scenario\":\"error\"}} — switch success, error, empty or passthrough.\n\
+         3. POST /__proxzy/inject {{\"pattern\":\"Wallet balance\",\"inject\":{{\"USERNAME\":\"qa.agent\"}}}} — add a body token.\n\
+         4. Send the app request through the proxy, then read /__proxzy/health and /__proxzy/session/summary to verify what was mocked and what went upstream.\n\
+         5. POST /__proxzy/reset when the scenario should return to normal.\n\n\
+         Constraints: loopback only (never expose the port), never change host proxy settings, and report a check as passed only after the engine response confirms it.\n"
+    )
+}
+
+/// Scroll the Agent Control page to the IDE hook for demo screenshots.
+fn agent_scroll_offset() -> f32 {
+    match std::env::var("PROXZY_DEMO").unwrap_or_default().as_str() {
+        "agent-hook" => 980.0,
+        "agent-brief" => 1120.0,
+        _ => 0.0,
+    }
+}
+
+#[cfg(test)]
+mod ide_hook_tests {
+    use super::*;
+
+    #[test]
+    fn brief_names_port_endpoints_and_guardrails() {
+        let brief = ide_brief(9091, "Cursor", ".cursor/rules/proxzy.mdc");
+        assert!(brief.contains("http://127.0.0.1:9091/__proxzy"));
+        assert!(brief.contains(
+            "{\"pattern\":\"Wallet balance\",\"scenario\":\"error\"}"
+        ));
+        assert!(brief.contains(".cursor/rules/proxzy.mdc"));
+        assert!(brief.contains("loopback only"));
+    }
 }

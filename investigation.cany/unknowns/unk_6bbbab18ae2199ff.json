@@ -1,14 +1,15 @@
 {
   "id": "unk_6bbbab18ae2199ff",
-  "revision": 1,
+  "revision": 2,
   "question": "How should device detection and the certificate prompt look and behave in the original?",
   "severity": "medium",
   "domain": "behaviour",
-  "status": "open",
+  "status": "blocked",
   "probes": [
     "A capture of Proxyman's device list and certificate install prompt",
     "The person's own description of the expected order"
   ],
   "evidence_for": [],
-  "evidence_against": []
+  "evidence_against": [],
+  "resolution": "Blocked: no capture of the original's device list or certificate prompt exists in the workspace, and the original cannot be opened. The POC implements an original flow: connected devices are listed with LAN/USB addresses, and the certificate step is explained in the Guide with a copyable command. Exact look and prompt order remain unknown."
 }

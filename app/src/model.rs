@@ -1339,6 +1339,61 @@ pub fn sample_captures() -> Vec<Capture> {
             pinned: false,
             aborted: false,
         },
+        // Seeded examples of the two safe-capture states. They keep the
+        // universal-capture story visible before a real device is connected:
+        // one system domain is always protected, one app domain waits for
+        // 1-click TLS decryption.
+        Capture {
+            id: 86,
+            method: "CONNECT".into(),
+            url: "https://swscan.apple.com:443".into(),
+            status: 200,
+            latency_ms: 12,
+            size_bytes: 1180,
+            kind: ApiKind::Tunnel,
+            started: "12:04:29.661".into(),
+            remote: "swscan.apple.com:443 via 127.0.0.1".into(),
+            protocol: "Raw TCP (sample)".into(),
+            req_headers: hdr(&[("Host", "swscan.apple.com"), ("Port", "443")]),
+            req_body: String::new(),
+            resp_headers: hdr(&[
+                ("Content-Type", "application/octet-stream; tunnel=passthrough"),
+                ("X-Proxzy-Tunnel", "Protected-Raw-Data"),
+            ]),
+            resp_body: "🛡️ SYSTEM PROTECTED RAW DATA TUNNEL\n\nPolicy: this host is on the built-in protected list (Apple software updates, push and certificate checks). Proxzy keeps the bytes untouched so macOS and simulators keep working.\n\nSelect a RAW TUNNEL row below to try the 1-click decryption action."
+                .into(),
+            graphql: None,
+            mock: None,
+            pinned: false,
+            aborted: false,
+        },
+        Capture {
+            id: 85,
+            method: "CONNECT".into(),
+            url: "https://api-preprod.sampleapp.dev:443".into(),
+            status: 200,
+            latency_ms: 24,
+            size_bytes: 2460,
+            kind: ApiKind::Tunnel,
+            started: "12:04:29.102".into(),
+            remote: "api-preprod.sampleapp.dev:443 via 127.0.0.1".into(),
+            protocol: "Raw TCP (sample)".into(),
+            req_headers: hdr(&[
+                ("Host", "api-preprod.sampleapp.dev"),
+                ("Port", "443"),
+            ]),
+            req_body: String::new(),
+            resp_headers: hdr(&[
+                ("Content-Type", "application/octet-stream; tunnel=passthrough"),
+                ("X-Proxzy-Tunnel", "Bypassed-Raw-Data"),
+            ]),
+            resp_body: "🔒 RAW TCP TUNNEL — TLS BYPASSED\n\nThis app domain is not in the SSL allowlist yet, so the request and response bodies stay encrypted.\n\nSelect this row and press Enable TLS Decryption (or use Intercept All on Live Capture). The next request from this domain will show headers, JSON, GraphQL and REST payloads."
+                .into(),
+            graphql: None,
+            mock: None,
+            pinned: false,
+            aborted: false,
+        },
     ]
 }
 
@@ -1688,8 +1743,8 @@ pub fn sanitize_mock_payload(body: &str) -> String {
                 let remaining = &out[val_start..];
                 let leading_spaces = remaining.len() - remaining.trim_start().len();
                 let trimmed = remaining.trim_start();
-                if trimmed.starts_with('"') {
-                    if let Some(end_quote) = trimmed[1..].find('"') {
+                if let Some(quoted) = trimmed.strip_prefix('"') {
+                    if let Some(end_quote) = quoted.find('"') {
                         let total_old_len = leading_spaces + 1 + end_quote + 1;
                         out.replace_range(val_start..val_start + total_old_len, &format!(" {}", replacement));
                         search_from = val_start + replacement.len() + 1;
@@ -1924,8 +1979,8 @@ impl MapRule {
                     let remaining = &rendered[val_start..];
                     let leading_spaces = remaining.len() - remaining.trim_start().len();
                     let trimmed = remaining.trim_start();
-                    if trimmed.starts_with('"') {
-                        if let Some(end_quote) = trimmed[1..].find('"') {
+                    if let Some(quoted) = trimmed.strip_prefix('"') {
+                        if let Some(end_quote) = quoted.find('"') {
                             let total_old_len = leading_spaces + 1 + end_quote + 1;
                             let prefix = if leading_spaces > 0 { " " } else { "" };
                             let replacement = format!("{}\"{}\"", prefix, v);
@@ -2066,12 +2121,6 @@ pub fn analyze_contract_drift(mock_json: &str, live_json: &str) -> ContractDrift
         added_in_live,
         notes,
     }
-}
-
-/// Detect contract drift between expected mock payload and actual live response payload.
-/// Returns a list of drift notes (e.g. missing keys or new unmocked keys).
-pub fn detect_json_contract_drift(mock_json: &str, live_json: &str) -> Vec<String> {
-    analyze_contract_drift(mock_json, live_json).notes
 }
 
 /// Audit entry for each network request processed during an active test session.
@@ -2273,7 +2322,7 @@ pub fn sample_map_rules() -> Vec<MapRule> {
   "items": []
 }"#
             .into(),
-            inject_props: [("USERNAME".to_string(), "papon".to_string())]
+            inject_props: [("USERNAME".to_string(), "demo.user".to_string())]
                 .into_iter()
                 .collect(),
             ..MapRule::default()
@@ -2848,8 +2897,8 @@ mod rule_tests {
         assert!(is_builtin_protected_domain("ocsp.digicert.com"));
         assert!(is_builtin_protected_domain("swscan.apple.com:443"));
         assert!(is_builtin_protected_domain("connectivitycheck.gstatic.com"));
-        assert!(!is_builtin_protected_domain("api.trueid.net"));
-        assert!(!is_builtin_protected_domain("api-preprod.trueid.net:443"));
+        assert!(!is_builtin_protected_domain("api.shopwave.dev"));
+        assert!(!is_builtin_protected_domain("api-preprod.example.com:443"));
 
         let tunnel_capture = Capture {
             id: 1,
@@ -2880,13 +2929,13 @@ mod rule_tests {
         let app_capture = Capture {
             id: 2,
             method: "CONNECT".to_string(),
-            url: "https://api-preprod.trueid.net:443".to_string(),
+            url: "https://api-preprod.example.com:443".to_string(),
             status: 200,
             latency_ms: 25,
             size_bytes: 1200,
-            kind: detect_kind("CONNECT", "https://api-preprod.trueid.net:443", ""),
+            kind: detect_kind("CONNECT", "https://api-preprod.example.com:443", ""),
             started: "10:00:01".to_string(),
-            remote: "api-preprod.trueid.net:443 via 127.0.0.1".to_string(),
+            remote: "api-preprod.example.com:443 via 127.0.0.1".to_string(),
             protocol: "TCP Tunnel (Raw)".to_string(),
             req_headers: vec![],
             req_body: String::new(),
@@ -2900,5 +2949,15 @@ mod rule_tests {
 
         assert!(app_capture.is_tunnel());
         assert!(!app_capture.is_system_protected());
+    }
+
+    #[test]
+    fn sample_feed_shows_protected_and_raw_tunnel_rows_without_looking_live() {
+        let samples = sample_captures();
+        let tunnels: Vec<&Capture> = samples.iter().filter(|c| c.is_tunnel()).collect();
+        assert_eq!(tunnels.len(), 2);
+        assert!(tunnels.iter().any(|c| c.is_system_protected()));
+        assert!(tunnels.iter().any(|c| !c.is_system_protected()));
+        assert!(tunnels.iter().all(|c| !c.is_live()));
     }
 }

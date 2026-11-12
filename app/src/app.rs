@@ -3,8 +3,8 @@ use crate::model::*;
 use crate::proxy;
 use crate::studio;
 use crate::studio::{
-    ApiTest, ExpectSource, ScreenPlay, ScreenStep, StepKind, StepOutcome, StepStatus,
-    TargetPlatform,
+    AndroidTransport, ApiTest, ExpectSource, ScreenPlay, ScreenStep, StepKind, StepOutcome,
+    StepStatus, TargetPlatform,
 };
 use crate::theme::*;
 use eframe::egui::{
@@ -12,9 +12,9 @@ use eframe::egui::{
     Sense, Stroke, TextStyle, Ui, Vec2,
 };
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum View {
     Traffic,
     Live,
@@ -26,12 +26,33 @@ enum View {
     Tests,
     Screen,
     Guide,
+    Tutorial,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MapViewMode {
     Table,
     Pipeline,
+}
+
+/// One row in the all-features palette. Keeping the action separate from the
+/// view lets the same list offer screens and small jobs without a second menu.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PaletteAction {
+    Go(View),
+    StartTour,
+    RunPractice,
+    ClearTraffic,
+    CopySummary,
+}
+
+#[derive(Clone, Copy)]
+struct PaletteEntry {
+    group: &'static str,
+    label: &'static str,
+    hint: &'static str,
+    icon: NavIcon,
+    action: PaletteAction,
 }
 
 /// One control-plane call, shown in the Agent Control feed so the person can
@@ -74,6 +95,7 @@ enum TrafficFilter {
     Rest,
     Errors,
     Mocked,
+    Tunnels,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -299,6 +321,73 @@ struct SendOutcome {
     error: Option<String>,
 }
 
+/// A real request is sent through the proxy to a local target; the proxy
+/// answers it and records it. Passing means the whole in/out path works, not
+/// just that a port is open.
+struct CaptureCheck {
+    nonce: u64,
+    started: Instant,
+    phase: CaptureCheckPhase,
+    http_status: Option<u16>,
+}
+
+#[derive(Clone)]
+enum CaptureCheckPhase {
+    Running,
+    Passed { status: u16, latency_ms: u64 },
+    Failed(String),
+}
+
+enum CaptureCheckMsg {
+    Http(Result<u16, String>),
+    Route(Vec<WebProxyState>),
+}
+
+/// One scripted practice run. It sends real requests through the listener and
+/// reports each one back, so the strip on screen always matches what the gate
+/// actually answered.
+struct PracticeRun {
+    total: usize,
+    statuses: Vec<Option<u16>>,
+    rx: Receiver<PracticeEvent>,
+    done: bool,
+    error: Option<String>,
+}
+
+enum PracticeEvent {
+    Sent { index: usize, status: u16 },
+    Failed { index: usize, message: String },
+    Done,
+}
+
+/// The five calls the practice button sends. They look like a small mobile
+/// backend: GraphQL, a catalogue, an unauthorised order, a checkout that hits
+/// the breakpoint and a recommendations feed.
+const PRACTICE_STEPS: [(&str, &str, &str, &str); 5] = [
+    (
+        "GraphQL",
+        "POST",
+        "/demo/graphql",
+        r#"{"operationName":"GetProducts","query":"query GetProducts { products(first: 20) { id name price currency inStock } }","variables":{}}"#,
+    ),
+    ("Mock", "GET", "/demo/products?limit=20&collection=running", ""),
+    ("401", "GET", "/demo/orders/8421", ""),
+    (
+        "Pause",
+        "POST",
+        "/demo/checkout",
+        r#"{"cart":"cart_9f21","totalQuantity":3,"total":2190.00}"#,
+    ),
+    ("REST", "GET", "/demo/recommendations?userId=u_8841", ""),
+];
+
+struct MacRouteSummary {
+    text: String,
+    detail: String,
+    color: egui::Color32,
+    points_here: bool,
+}
+
 pub struct App {
     captures: Vec<Capture>,
     selected: usize,
@@ -312,11 +401,20 @@ pub struct App {
     inspector_tab: InspectorTab,
     response_format: ResponseFormat,
     search: String,
+    /// The all-features palette is the always-available answer to "where is
+    /// that screen?" — especially useful when the rail is scrolled or short.
+    palette_open: bool,
+    palette_query: String,
+    palette_index: usize,
+    palette_focus: bool,
     recording: bool,
     map_rules: Vec<MapRule>,
     breakpoints: Vec<BreakpointRule>,
     ssl_proxying_enabled: bool,
     ssl_allowlist: Vec<String>,
+    /// Explicit full-catch switch. Off by default; the connection card shows
+    /// clearly whether HTTPS is being decrypted or only tunnelled.
+    intercept_all: bool,
     logs: Vec<LogEntry>,
     composer_method: String,
     composer_url: String,
@@ -348,26 +446,29 @@ pub struct App {
     /// instead of leaving the Mac with a proxy that no longer answers.
     mac_proxy_on: bool,
     share_open: bool,
+    /// The active guided-tour stop. None means the tour is closed; the Tutorial
+    /// page is a normal screen and does not depend on this flag.
+    tour: Option<usize>,
     toast: Option<Toast>,
     frames: u32,
     screenshot_path: Option<String>,
     screenshot_frames: u32,
     next_id: u64,
-    rule_name: String,
-    rule_pattern: String,
-    rule_method: RuleMethod,
-    rule_status: String,
-    rule_body: String,
-    rule_delay: String,
     bp_stage_override: BpStage,
     log_level_filter: Option<Level>,
     proxy: Option<proxy::ProxyHandle>,
     proxy_rx: Option<Receiver<proxy::ProxyEvent>>,
     proxy_error: Option<String>,
     proxy_port: u16,
+    lan_enabled: bool,
+    control_token: String,
+    lan_ip: String,
     ca_info: Option<proxy::CaInfo>,
     live_tab: usize,
-    proxy_test: Option<Receiver<Result<String, String>>>,
+    capture_check: Option<CaptureCheck>,
+    capture_check_rx: Option<Receiver<CaptureCheckMsg>>,
+    practice: Option<PracticeRun>,
+    mac_route: Option<Vec<WebProxyState>>,
     sim_reboot: Option<Receiver<Result<String, String>>>,
     device_scan: DeviceScanState,
     device_prompt: Option<DevicePrompt>,
@@ -401,7 +502,6 @@ pub struct App {
     agent_session_env: String,
     agent_session_version: String,
     agent_port_input: String,
-    agent_auto_record_note: String,
     screen_plays: Vec<ScreenPlay>,
     screen_selected: usize,
     screen_target: TargetPlatform,
@@ -409,6 +509,7 @@ pub struct App {
     screen_tab: usize,
     screen_export: String,
     screen_import: String,
+    android_transport: AndroidTransport,
 }
 
 impl App {
@@ -426,21 +527,44 @@ impl App {
             "map" | "map-local" => View::MapLocal,
             "map-pipeline" => View::MapLocal,
             "breakpoints" => View::Breakpoints,
-            "logs" => View::Logs,
+            "logs" | "log-activity" | "activity" => View::Logs,
             "agent" | "agent-control" => View::Agent,
             "tests" | "test-bench" => View::Tests,
             "screen" | "screen-play" | "mcp" => View::Screen,
             "guide" => View::Guide,
+            "tutorial" | "learn" | "tour" => View::Tutorial,
             _ => View::Traffic,
         };
         let (proxy_tx, proxy_rx) = channel();
         let mut proxy_handle = None;
         let mut proxy_error = None;
         let mut proxy_port = start_port.max(1);
+        let mut lan_enabled = false;
+        let mut control_token = String::new();
+        let mut lan_ip = String::new();
         for candidate in [proxy_port, 9090, 9091, 9092, 9093] {
-            match proxy::start(candidate, proxy_tx.clone()) {
+            match proxy::start_with_options(
+                proxy::ProxyStartOptions {
+                    port: candidate,
+                    ..proxy::ProxyStartOptions::default()
+                },
+                proxy_tx.clone(),
+            ) {
                 Ok(handle) => {
                     proxy_port = handle.port;
+                    lan_enabled = handle.binding.policy.is_lan();
+                    control_token = handle
+                        .binding
+                        .policy
+                        .control_token()
+                        .unwrap_or_default()
+                        .to_string();
+                    lan_ip = handle
+                        .binding
+                        .policy
+                        .advertised_ip()
+                        .unwrap_or("127.0.0.1")
+                        .to_string();
                     proxy_handle = Some(handle);
                     break;
                 }
@@ -460,11 +584,18 @@ impl App {
             inspector_tab: InspectorTab::Overview,
             response_format: ResponseFormat::Json,
             search: String::new(),
+            palette_open: false,
+            palette_query: String::new(),
+            palette_index: 0,
+            palette_focus: false,
             recording: true,
             map_rules: sample_map_rules(),
             breakpoints: sample_breakpoints(),
             ssl_proxying_enabled: true,
             ssl_allowlist: Vec::new(),
+            intercept_all: std::env::var("PROXZY_FULL_CATCH")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
             logs: sample_logs(),
             composer_method: method,
             composer_url: url,
@@ -495,32 +626,27 @@ impl App {
             mac_proxy_confirm_open: false,
             mac_proxy_on: false,
             share_open: false,
+            tour: None,
             toast: None,
             frames: 0,
             screenshot_path,
             screenshot_frames,
             next_id: 500,
-            rule_name: "Local fixture".into(),
-            rule_pattern: "/v1/products".into(),
-            rule_method: RuleMethod::Get,
-            rule_status: "200".into(),
-            rule_body: r#"{
-  "items": [
-    { "id": "prd_local_1", "name": "Local Test Product", "price": 42.00 }
-  ],
-  "source": "map-local"
-}"#
-            .into(),
-            rule_delay: "20".into(),
             bp_stage_override: BpStage::Request,
             log_level_filter: None,
             proxy: proxy_handle,
             proxy_rx: Some(proxy_rx),
             proxy_error,
             proxy_port,
+            lan_enabled,
+            control_token,
+            lan_ip,
             ca_info,
             live_tab: 0,
-            proxy_test: None,
+            capture_check: None,
+            capture_check_rx: None,
+            practice: None,
+            mac_route: None,
             sim_reboot: None,
             device_scan: DeviceScanState::Idle,
             last_device_scan: None,
@@ -536,7 +662,9 @@ impl App {
             },
             tests: studio::sample_tests(),
             test_selected: 0,
-            test_target: TargetPlatform::Mac,
+            test_target: TargetPlatform::from_slug(
+                &std::env::var("PROXZY_TARGET").unwrap_or_default(),
+            ),
             test_queue: Vec::new(),
             test_send: None,
             test_export: String::new(),
@@ -553,19 +681,31 @@ impl App {
             agent_session_env: "preprod".into(),
             agent_session_version: "1.1.0".into(),
             agent_port_input: proxy_port.to_string(),
-            agent_auto_record_note: String::new(),
             screen_plays: studio::sample_screen_plays(),
             screen_selected: 0,
-            screen_target: TargetPlatform::Mac,
+            screen_target: TargetPlatform::from_slug(
+                &std::env::var("PROXZY_TARGET").unwrap_or_default(),
+            ),
             screen_run: None,
             screen_tab: 2,
             screen_export: String::new(),
             screen_import: String::new(),
+            android_transport: AndroidTransport::from_slug(
+                &std::env::var("PROXZY_ANDROID_TRANSPORT").unwrap_or_default(),
+            ),
         };
         app.agent_rule = app.map_rules.first().map(|r| r.id);
         app.sync_proxy_config();
         app.request_device_scan();
         app.request_stale_proxy_scan();
+        if matches!(
+            std::env::var("PROXZY_VIEW").unwrap_or_default().as_str(),
+            "features" | "palette" | "all-features"
+        ) || std::env::var("PROXZY_DEMO").as_deref() == Ok("palette")
+        {
+            app.palette_open = true;
+            app.palette_focus = true;
+        }
         match std::env::var("PROXZY_DEMO").unwrap_or_default().as_str() {
             "map-edit" => {
                 let rule = app.map_rules.first().cloned();
@@ -582,6 +722,20 @@ impl App {
                 }
             }
             "share" => app.share_open = true,
+            "check" | "doctor" => {
+                if app.view != View::Live {
+                    app.view = View::Live;
+                }
+                app.start_capture_check(&cc.egui_ctx);
+            }
+            "practice" => {
+                app.start_practice_session(&cc.egui_ctx);
+            }
+            "live-filter" | "empty-live" => {
+                app.view = View::Traffic;
+                app.filter = TrafficFilter::Live;
+                app.follow_latest = false;
+            }
             "stale" => {
                 app.stale_proxy_scan = None;
                 app.stale_proxy = Some(vec![WebProxyState {
@@ -604,6 +758,39 @@ impl App {
                 app.follow_latest = false;
                 if app.captures.len() > 1 {
                     app.selected = 1;
+                }
+            }
+            "tunnels" | "protected" => {
+                app.view = View::Traffic;
+                app.filter = TrafficFilter::Tunnels;
+                app.follow_latest = false;
+                let protected = std::env::var("PROXZY_DEMO").as_deref() == Ok("protected");
+                if let Some(idx) = app
+                    .captures
+                    .iter()
+                    .position(|c| c.is_tunnel() && c.is_system_protected() == protected)
+                {
+                    app.selected = idx;
+                }
+            }
+            "full-catch" => {
+                app.view = View::Live;
+                app.intercept_all = true;
+                app.ssl_proxying_enabled = true;
+                app.sync_proxy_config();
+            }
+            "tour" | "tutorial" => {
+                app.begin_tour(0);
+            }
+            "tour-agent" => {
+                app.begin_tour(tour_index_for(View::Agent));
+            }
+            "tour-agent-hook" => {
+                app.begin_tour(tour_index_for_art(TourArt::AgentHook));
+            }
+            other if other.starts_with("tour-") => {
+                if let Ok(index) = other["tour-".len()..].parse::<usize>() {
+                    app.begin_tour(index);
                 }
             }
             "composer" => {
@@ -641,6 +828,7 @@ impl App {
                 catch_enabled: self.catch_enabled,
                 breakpoints: self.breakpoints.clone(),
                 ssl_proxying_enabled: self.ssl_proxying_enabled,
+                intercept_all: self.intercept_all,
                 ssl_allowlist: self.ssl_allowlist.clone(),
                 auto_record: auto_rec,
                 auto_record_domains: auto_rec_domains,
@@ -678,6 +866,7 @@ impl App {
                     let status = capture.status;
                     let mock = capture.mock.clone();
                     let aborted = capture.aborted;
+                    self.note_capture_check(&capture, ctx);
                     self.add_capture(*capture);
                     if let Some(name) = mock {
                         self.log(
@@ -708,12 +897,14 @@ impl App {
                     self.log(lvl, "Proxy", message);
                 }
                 proxy::ProxyEvent::Breakpoint(bp) => {
-                    self.open_live_breakpoint(bp);
+                    self.open_live_breakpoint(*bp);
                 }
                 proxy::ProxyEvent::RemoteConfigUpdated(cfg) => {
+                    let cfg = *cfg;
                     self.map_enabled = cfg.map_enabled;
                     self.map_rules = cfg.map_rules;
                     self.ssl_proxying_enabled = cfg.ssl_proxying_enabled;
+                    self.intercept_all = cfg.intercept_all;
                     self.ssl_allowlist = cfg.ssl_allowlist;
                 }
                 proxy::ProxyEvent::Control { method, path, ok } => {
@@ -746,18 +937,52 @@ impl App {
         }
         let (tx, rx) = channel();
         let mut last_error = None;
+        let requested_lan = self.lan_enabled;
+        let requested_token = if self.control_token.trim().is_empty() {
+            None
+        } else {
+            Some(self.control_token.clone())
+        };
         for candidate in [self.proxy_port, 9090, 9091, 9092, 9093] {
-            match proxy::start(candidate, tx.clone()) {
+            match proxy::start_with_options(
+                proxy::ProxyStartOptions {
+                    port: candidate,
+                    lan_enabled: requested_lan,
+                    bind_ip: None,
+                    control_token: requested_token.clone(),
+                },
+                tx.clone(),
+            ) {
                 Ok(handle) => {
                     self.proxy_port = handle.port;
                     self.ca_info = Some(handle.ca.clone());
+                    self.lan_enabled = handle.binding.policy.is_lan();
+                    self.control_token = handle
+                        .binding
+                        .policy
+                        .control_token()
+                        .unwrap_or_default()
+                        .to_string();
+                    self.lan_ip = handle
+                        .binding
+                        .policy
+                        .advertised_ip()
+                        .unwrap_or("127.0.0.1")
+                        .to_string();
                     self.proxy = Some(handle);
                     self.proxy_rx = Some(rx);
                     self.proxy_error = None;
                     self.log(
                         Level::Info,
                         "Proxy",
-                        format!("Live capture started on 127.0.0.1:{}", self.proxy_port),
+                        if self.lan_enabled {
+                            format!(
+                                "Live capture started on {} (LAN opt-in)",
+                                self.binding_label()
+                            )
+                        } else {
+                            format!("Live capture started on {}", self.binding_label())
+                        },
                     );
                     self.toast_now(ctx, "Live proxy started");
                     self.sync_proxy_config();
@@ -772,61 +997,468 @@ impl App {
         self.toast_now(ctx, "Could not start the proxy — is another copy running?");
     }
 
-    fn test_proxy(&mut self, ctx: &egui::Context) {
+    fn binding_label(&self) -> String {
+        if self.lan_enabled {
+            format!("{}:{}", self.lan_ip, self.proxy_port)
+        } else {
+            format!("127.0.0.1:{}", self.proxy_port)
+        }
+    }
+
+    /// Restart the listener with or without LAN access. The safe default is
+    /// local only; turning LAN on is always an explicit action.
+    fn set_lan_enabled(&mut self, ctx: &egui::Context, enabled: bool) {
+        if self.lan_enabled == enabled && self.proxy.is_some() {
+            return;
+        }
+        let was_running = self.proxy.is_some();
+        self.lan_enabled = enabled;
+        if self.proxy.is_some() {
+            if let Some(mut handle) = self.proxy.take() {
+                handle.stop();
+            }
+            self.proxy_rx = None;
+        }
+        if was_running {
+            self.start_proxy(ctx);
+        }
+        if enabled {
+            self.log(
+                Level::Warn,
+                "Security",
+                format!(
+                    "LAN access enabled on {} — the control plane now requires a token",
+                    self.binding_label()
+                ),
+            );
+            self.toast_now(ctx, "LAN access on — keep this network trusted");
+        } else {
+            self.log(Level::Info, "Security", "LAN access off — proxy is local only again");
+            self.toast_now(ctx, "LAN access off");
+        }
+    }
+
+    /// Send one real request through the listener and wait for it to appear in
+    /// the traffic list. This is the honest answer to "I connected the
+    /// simulator but see nothing": it separates a dead gate from a device that
+    /// is still bypassing it.
+    fn start_capture_check(&mut self, ctx: &egui::Context) {
+        if self.proxy.is_none() {
+            self.start_proxy(ctx);
+        }
         if self.proxy.is_none() {
             self.toast_now(ctx, "Start the proxy first");
             return;
         }
         let port = self.proxy_port;
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(1);
         let (tx, rx) = channel();
-        self.proxy_test = Some(rx);
-        std::thread::spawn(move || {
-            let output = std::process::Command::new("curl")
-                .arg("-sS")
-                .arg("--max-time")
-                .arg("10")
-                .arg("-x")
-                .arg(format!("http://127.0.0.1:{}", port))
-                .arg("-o")
-                .arg("/dev/null")
-                .arg("-w")
-                .arg("%{http_code} %{time_total}s")
-                .arg("https://example.com/")
-                .output();
-            let result = match output {
-                Ok(out) => {
-                    let code = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if out.status.success() {
-                        Ok(format!("Test request through the proxy: HTTP {} in {}", code, ""))
-                    } else {
-                        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-                    }
-                }
-                Err(e) => Err(format!("curl could not run: {}", e)),
-            };
-            let _ = tx.send(result);
+        self.capture_check_rx = Some(rx);
+        self.capture_check = Some(CaptureCheck {
+            nonce,
+            started: Instant::now(),
+            phase: CaptureCheckPhase::Running,
+            http_status: None,
         });
-        self.log(Level::Info, "Proxy", "Sending a test request through the live proxy");
+        self.mac_route = None;
+        self.log(
+            Level::Info,
+            "Capture check",
+            format!(
+                "Sent a real request through 127.0.0.1:{} and waiting for it to be recorded",
+                port
+            ),
+        );
+        std::thread::spawn(move || {
+            let result = capture_check_request(port, nonce);
+            let _ = tx.send(CaptureCheckMsg::Http(result));
+            let states = read_all_web_proxies();
+            let _ = tx.send(CaptureCheckMsg::Route(states));
+        });
+        ctx.request_repaint();
     }
 
-    fn poll_proxy_test(&mut self) {
-        let mut result = None;
-        if let Some(rx) = &self.proxy_test {
-            if let Ok(value) = rx.try_recv() {
-                result = Some(value);
+    fn poll_capture_check(&mut self, ctx: &egui::Context) {
+        let mut messages = Vec::new();
+        if let Some(rx) = &self.capture_check_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(message) => messages.push(message),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => break,
+                }
             }
         }
-        if let Some(value) = result {
-            self.proxy_test = None;
-            match value {
-                Ok(message) => self.log(Level::Info, "Proxy", message),
-                Err(message) => self.log(
-                    Level::Error,
-                    "Proxy",
-                    format!("Test request failed: {}", message),
+        for message in messages {
+            match message {
+                CaptureCheckMsg::Http(Ok(status)) => {
+                    if let Some(check) = &mut self.capture_check {
+                        check.http_status = Some(status);
+                    }
+                }
+                CaptureCheckMsg::Http(Err(error)) => {
+                    if let Some(check) = &mut self.capture_check {
+                        if matches!(check.phase, CaptureCheckPhase::Running) {
+                            check.phase = CaptureCheckPhase::Failed(error.clone());
+                        }
+                    }
+                    self.log(
+                        Level::Error,
+                        "Capture check",
+                        format!("The gate did not answer: {}", error),
+                    );
+                }
+                CaptureCheckMsg::Route(states) => {
+                    self.mac_route = Some(states);
+                }
+            }
+        }
+
+        if let Some(check) = &mut self.capture_check {
+            if matches!(check.phase, CaptureCheckPhase::Running)
+                && check.started.elapsed() > Duration::from_secs(6)
+            {
+                let message = if !self.recording {
+                    "Recording is paused, so the request was answered but not added to the list."
+                        .to_string()
+                } else if let Some(status) = check.http_status {
+                    format!(
+                        "The gate answered HTTP {}, but no traffic row arrived. Check that recording is on and the port is the one macOS is using.",
+                        status
+                    )
+                } else {
+                    "No answer from the gate. Is another app using this port?".to_string()
+                };
+                check.phase = CaptureCheckPhase::Failed(message.clone());
+                self.log(Level::Error, "Capture check", message);
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    /// Mark the check as passed when the matching capture arrives. The nonce
+    /// makes sure an old or unrelated request cannot turn the check green.
+    fn note_capture_check(&mut self, capture: &Capture, ctx: &egui::Context) {
+        let Some(check) = &mut self.capture_check else {
+            return;
+        };
+        if !matches!(check.phase, CaptureCheckPhase::Running) {
+            return;
+        }
+        if capture.url.contains(&format!("nonce={}", check.nonce)) {
+            check.phase = CaptureCheckPhase::Passed {
+                status: capture.status,
+                latency_ms: capture.latency_ms,
+            };
+            self.log(
+                Level::Info,
+                "Capture check",
+                format!(
+                    "Passed: {} {} answered with {} in {} ms and was recorded",
+                    capture.method, capture.url, capture.status, capture.latency_ms
                 ),
+            );
+            self.toast_now(ctx, "Capture check passed — live traffic is arriving");
+            ctx.request_repaint();
+        }
+    }
+
+    /// Create (or refresh) the two rules the practice session uses. They are
+    /// ordinary rules, visible and editable on the Map Local and Breakpoints
+    /// pages, so the person can change them afterwards and see the effect.
+    fn ensure_practice_rules(&mut self) {
+        const MOCK_NAME: &str = "Practice · Products mock";
+        const BP_NAME: &str = "Practice · Pause checkout";
+        let success = r#"{
+  "source": "practice-mock",
+  "note": "Answered by Map Local — the server was never called.",
+  "products": [
+    { "id": "prod_mock_1", "name": "Mocked product", "price": 99.00, "currency": "THB" }
+  ]
+}"#;
+        if !self.map_rules.iter().any(|r| r.name == MOCK_NAME) {
+            let id = self.map_rules.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+            self.map_rules.push(MapRule {
+                id,
+                name: MOCK_NAME.into(),
+                folder: "Practice".into(),
+                pattern: "*/demo/products*".into(),
+                method: RuleMethod::Get,
+                status: 200,
+                content_type: "application/json".into(),
+                delay_ms: 6,
+                body: success.into(),
+                graphql_name: String::new(),
+                enabled: true,
+                hits: 0,
+                active_scenario: MockScenario::Success,
+                success_status: 200,
+                success_body: success.into(),
+                error_status: 500,
+                error_body: r#"{"error":"practice_error","message":"This is the Error scenario from Map Local."}"#.into(),
+                empty_status: 200,
+                empty_body: r#"{"source":"practice-mock","products":[]}"#.into(),
+                inject_props: std::collections::HashMap::new(),
+                app_version: String::new(),
+                env: String::new(),
+            });
+        } else if let Some(rule) = self.map_rules.iter_mut().find(|r| r.name == MOCK_NAME) {
+            rule.enabled = true;
+            rule.status = 200;
+            rule.active_scenario = MockScenario::Success;
+            rule.body = success.into();
+            rule.success_status = 200;
+            rule.success_body = success.into();
+        }
+        if !self.breakpoints.iter().any(|b| b.name == BP_NAME) {
+            let id = self.breakpoints.iter().map(|b| b.id).max().unwrap_or(0) + 1;
+            self.breakpoints.push(BreakpointRule {
+                id,
+                name: BP_NAME.into(),
+                pattern: "*/demo/checkout*".into(),
+                graphql_name: String::new(),
+                stage: BpStage::Request,
+                enabled: true,
+                hits: 0,
+            });
+        } else if let Some(rule) = self.breakpoints.iter_mut().find(|b| b.name == BP_NAME) {
+            rule.enabled = true;
+        }
+        self.map_enabled = true;
+        self.catch_enabled = true;
+    }
+
+    /// Start the no-device practice run: five real calls through the listener,
+    /// one of them answered by Map Local and one paused by a breakpoint.
+    fn start_practice_session(&mut self, ctx: &egui::Context) {
+        if self.proxy.is_none() {
+            self.start_proxy(ctx);
+        }
+        if self.proxy.is_none() {
+            self.toast_now(ctx, "Start the proxy before the practice session");
+            return;
+        }
+        self.ensure_practice_rules();
+        // Each run starts clean: old practice rows go, real captures stay.
+        self.captures
+            .retain(|c| !c.url.contains(crate::proxy::PRACTICE_HOST));
+        self.selected = 0;
+        self.follow_latest = true;
+        self.filter = TrafficFilter::All;
+        self.search.clear();
+        self.view = View::Traffic;
+        self.inspector_tab = InspectorTab::Overview;
+
+        let (tx, rx) = channel();
+        let port = self.proxy_port;
+        self.practice = Some(PracticeRun {
+            total: PRACTICE_STEPS.len(),
+            statuses: vec![None; PRACTICE_STEPS.len()],
+            rx,
+            done: false,
+            error: None,
+        });
+        self.log(
+            Level::Info,
+            "Practice",
+            "Practice session started: five real calls through the gate, all local",
+        );
+        self.toast_now(
+            ctx,
+            "Practice session running — watch the rows arrive",
+        );
+        std::thread::spawn(move || {
+            for (index, (_, method, path, body)) in PRACTICE_STEPS.iter().enumerate() {
+                if index > 0 {
+                    std::thread::sleep(Duration::from_millis(340));
+                }
+                match practice_request(port, method, path, body) {
+                    Ok(status) => {
+                        let _ = tx.send(PracticeEvent::Sent { index, status });
+                    }
+                    Err(message) => {
+                        let _ = tx.send(PracticeEvent::Failed { index, message });
+                    }
+                }
+            }
+            let _ = tx.send(PracticeEvent::Done);
+        });
+        ctx.request_repaint();
+    }
+
+    fn poll_practice(&mut self, ctx: &egui::Context) {
+        let mut events = Vec::new();
+        if let Some(run) = &self.practice {
+            loop {
+                match run.rx.try_recv() {
+                    Ok(event) => events.push(event),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        if !run.done {
+                            events.push(PracticeEvent::Done);
+                        }
+                        break;
+                    }
+                }
             }
         }
+        let mut finished_now = false;
+        for event in events {
+            let Some(run) = &mut self.practice else {
+                break;
+            };
+            match event {
+                PracticeEvent::Sent { index, status } => {
+                    if let Some(slot) = run.statuses.get_mut(index) {
+                        *slot = Some(status);
+                    }
+                }
+                PracticeEvent::Failed { index, message } => {
+                    if let Some(slot) = run.statuses.get_mut(index) {
+                        *slot = Some(0);
+                    }
+                    run.error = Some(message.clone());
+                    self.log(
+                        Level::Error,
+                        "Practice",
+                        format!("Practice call {} failed: {}", index + 1, message),
+                    );
+                }
+                PracticeEvent::Done => {
+                    if !run.done {
+                        run.done = true;
+                        finished_now = true;
+                    }
+                }
+            }
+        }
+        if finished_now {
+            let answered = self
+                .practice
+                .as_ref()
+                .map(|r| r.statuses.iter().filter(|s| s.is_some()).count())
+                .unwrap_or(0);
+            self.log(
+                Level::Info,
+                "Practice",
+                format!(
+                    "Practice session finished: {} of {} calls answered. One was mocked and one was paused.",
+                    answered,
+                    PRACTICE_STEPS.len()
+                ),
+            );
+            self.toast_now(
+                ctx,
+                "Practice complete — check the Mocked filter and Log Activity",
+            );
+            ctx.request_repaint();
+        }
+    }
+
+    fn set_full_catch(&mut self, ctx: &egui::Context, enabled: bool) {        self.intercept_all = enabled;
+        if enabled {
+            self.ssl_proxying_enabled = true;
+            self.log(
+                Level::Warn,
+                "SSL Proxying",
+                "Full HTTPS catch is on. Every host is decrypted except protected system services; trust the Proxzy CA on the device first.",
+            );
+            self.toast_now(ctx, "Full HTTPS catch on — install the CA on the device");
+        } else {
+            // A lingering "*" entry from an older session would keep full
+            // catch effectively on, so clear it with the explicit switch.
+            self.ssl_allowlist.retain(|domain| domain != "*");
+            self.log(
+                Level::Info,
+                "SSL Proxying",
+                "Full HTTPS catch is off. HTTPS is tunneled unless a domain is listed.",
+            );
+            self.toast_now(ctx, "Full HTTPS catch off");
+        }
+        self.sync_proxy_config();
+    }
+
+    /// What macOS currently uses for the web proxy. The iOS Simulator inherits
+    /// this route, so it is the difference between "the gate is broken" and
+    /// "the simulator is still going direct".
+    fn mac_route_summary(&self) -> MacRouteSummary {
+        let Some(states) = &self.mac_route else {
+            return MacRouteSummary {
+                text: "not checked".into(),
+                detail: "Run the check to read the Mac's proxy route".into(),
+                color: FAINT,
+                points_here: false,
+            };
+        };
+        let enabled: Vec<&WebProxyState> = states.iter().filter(|s| s.enabled).collect();
+        if enabled.is_empty() {
+            return MacRouteSummary {
+                text: "Direct (off)".into(),
+                detail: "The simulator will bypass Proxzy until the Mac proxy is on".into(),
+                color: AMBER,
+                points_here: false,
+            };
+        }
+        let here: Vec<&&WebProxyState> = enabled
+            .iter()
+            .filter(|s| s.host == "127.0.0.1" && s.port == self.proxy_port)
+            .collect();
+        if !here.is_empty() {
+            let services = here
+                .iter()
+                .map(|s| s.service.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return MacRouteSummary {
+                text: "Points here".into(),
+                detail: format!("{} → 127.0.0.1:{}", services, self.proxy_port),
+                color: GREEN,
+                points_here: true,
+            };
+        }
+        let first = enabled[0];
+        let same_machine = first.host == "127.0.0.1" || first.host == "localhost";
+        MacRouteSummary {
+            text: if same_machine {
+                "Other port".into()
+            } else {
+                "Other proxy".into()
+            },
+            detail: if same_machine {
+                format!(
+                    "{} → {}:{} . This window is on {}. Traffic is going to another proxy.",
+                    first.service, first.host, first.port, self.proxy_port
+                )
+            } else {
+                format!("{} → {}:{}", first.service, first.host, first.port)
+            },
+            color: RED,
+            points_here: false,
+        }
+    }
+
+    fn capture_check_phase(&self) -> Option<CaptureCheckPhase> {
+        self.capture_check.as_ref().map(|c| c.phase.clone())
+    }
+
+    /// A command the person can paste into Terminal if macOS refuses the
+    /// in-app network change. It names the first network service Proxzy can
+    /// see and uses this window's real port.
+    fn mac_proxy_fix_command(&self) -> String {
+        let service = self
+            .mac_route
+            .as_ref()
+            .and_then(|states| states.first())
+            .map(|s| s.service.clone())
+            .unwrap_or_else(|| "Wi-Fi".to_string());
+        format!(
+            "sudo networksetup -setwebproxy \"{service}\" 127.0.0.1 {port}\nsudo networksetup -setsecurewebproxy \"{service}\" 127.0.0.1 {port}",
+            service = service,
+            port = self.proxy_port
+        )
     }
 
     fn install_ca_ios_sim(&mut self, ctx: &egui::Context) -> bool {
@@ -885,7 +1517,7 @@ impl App {
 
     /// Turn the macOS web proxy on (or off) for every enabled network
     /// service. The iOS Simulator inherits these settings from the Mac, which
-    /// is why Proxyman can capture a simulator without touching the app.
+    /// lets a local MITM proxy capture simulator traffic without touching the app.
     fn set_mac_proxy(&mut self, ctx: &egui::Context, clear: bool) -> bool {
         if !clear && self.proxy.is_none() {
             self.start_proxy(ctx);
@@ -956,6 +1588,11 @@ impl App {
                 "macOS web proxy now points at Proxzy"
             },
         );
+        if !clear {
+            // Prove the new route immediately: one real request through the
+            // gate, plus a fresh read of the Mac proxy the simulator uses.
+            self.start_capture_check(ctx);
+        }
         true
     }
 
@@ -1005,8 +1642,8 @@ impl App {
             return;
         }
         let proxy_ok = self.set_mac_proxy(ctx, false);
-        // A running simulator keeps the old trust store in memory. Proxyman
-        // restarts it after installing the CA; do the same here.
+        // A running simulator keeps the old trust store in memory, so restart
+        // it after installing the CA to pick up the new root certificate.
         self.restart_ios_simulator_udid(ctx, udid);
         if proxy_ok {
             self.log(
@@ -1015,7 +1652,22 @@ impl App {
                 "iOS Simulator setup finished; it is restarting to load the CA",
             );
         } else {
-            self.toast_now(ctx, "Certificate installed; set the Mac proxy by hand");
+            let service = enabled_network_services()
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| "Wi-Fi".into());
+            self.log(
+                Level::Error,
+                "Proxy",
+                format!(
+                    "macOS refused the proxy change. Run: sudo networksetup -setwebproxy \"{}\" 127.0.0.1 {} && sudo networksetup -setsecurewebproxy \"{}\" 127.0.0.1 {}",
+                    service, self.proxy_port, service, self.proxy_port
+                ),
+            );
+            self.toast_now(
+                ctx,
+                "Certificate installed, but macOS refused the proxy. Use Copy fix in the check strip.",
+            );
         }
     }
 
@@ -1117,7 +1769,7 @@ impl App {
                     // example after a relaunch). Adopt the setting so quitting
                     // restores the network instead of breaking the browser.
                     adopted = true;
-                } else if !port_has_listener(state.port) {
+                } else if proxy_is_stale(&state) {
                     stale.push(state);
                 }
             }
@@ -1285,14 +1937,25 @@ impl App {
                         self.start_proxy(ctx);
                     }
                     if kind == devices::DeviceKind::AndroidEmulator {
-                        self.set_android_proxy_serial(ctx, Some(serial), "10.0.2.2", false);
-                    } else if let Some(ip) = devices::host_ip() {
-                        self.set_android_proxy_serial(ctx, Some(serial), &ip, false);
+                        let _ = self.setup_android_reverse_serial(ctx, serial);
+                        self.set_android_proxy_serial(ctx, Some(serial), "127.0.0.1", false);
+                    } else if self.android_transport == AndroidTransport::UsbReverse {
+                        if self.setup_android_reverse_serial(ctx, serial) {
+                            self.set_android_proxy_serial(ctx, Some(serial), "127.0.0.1", false);
+                        }
                     } else {
-                        self.toast_now(
-                            ctx,
-                            "Could not find this Mac's LAN address; set the proxy by hand",
-                        );
+                        if !self.lan_enabled {
+                            self.set_lan_enabled(ctx, true);
+                        }
+                        if let Some(ip) = devices::host_ip() {
+                            self.lan_ip = ip.clone();
+                            self.set_android_proxy_serial(ctx, Some(serial), &ip, false);
+                        } else {
+                            self.toast_now(
+                                ctx,
+                                "Could not find this Mac's LAN address; set the proxy by hand",
+                            );
+                        }
                     }
                 }
                 self.push_ca_android_serial(ctx, Some(serial));
@@ -1301,6 +1964,39 @@ impl App {
                     "Certificate",
                     "Certificate copied to Download; finish installing it in Settings",
                 );
+            }
+        }
+    }
+
+    fn setup_android_reverse_serial(&mut self, ctx: &egui::Context, serial: &str) -> bool {
+        let port = self.proxy_port;
+        let spec = format!("tcp:{}", port);
+        match std::process::Command::new("adb")
+            .args(["-s", serial, "reverse", &spec, &spec])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                self.log(
+                    Level::Info,
+                    "Proxy",
+                    format!("USB bridge ready: adb -s {} reverse {} {}", serial, spec, spec),
+                );
+                true
+            }
+            Ok(out) => {
+                let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                self.log(
+                    Level::Error,
+                    "Proxy",
+                    format!("adb reverse failed: {}", err),
+                );
+                self.toast_now(ctx, "adb reverse failed — check USB debugging connection");
+                false
+            }
+            Err(e) => {
+                self.log(Level::Error, "Proxy", format!("Could not run adb: {}", e));
+                self.toast_now(ctx, "Android platform tools (adb) were not found");
+                false
             }
         }
     }
@@ -1498,6 +2194,7 @@ impl App {
                 TrafficFilter::Rest => c.kind == ApiKind::Rest,
                 TrafficFilter::Errors => c.is_error(),
                 TrafficFilter::Mocked => c.mock.is_some(),
+                TrafficFilter::Tunnels => c.is_tunnel(),
             })
             .count()
     }
@@ -1517,6 +2214,7 @@ impl App {
                     TrafficFilter::Rest => c.kind == ApiKind::Rest,
                     TrafficFilter::Errors => c.is_error(),
                     TrafficFilter::Mocked => c.mock.is_some(),
+                    TrafficFilter::Tunnels => c.is_tunnel(),
                 };
                 let ok_search = q.is_empty()
                     || c.url.to_lowercase().contains(&q)
@@ -1545,6 +2243,7 @@ impl App {
             TrafficFilter::Rest => "REST API",
             TrafficFilter::Errors => "Errors",
             TrafficFilter::Mocked => "Mocked responses",
+            TrafficFilter::Tunnels => "Raw tunnels",
         }
     }
 
@@ -2174,25 +2873,6 @@ impl App {
         self.toast_now(ctx, &format!("Mapping saved: {}", rule.name));
     }
 
-    fn duplicate_map_rule(&mut self, id: u64) {
-        if let Some(r) = self.map_rules.iter().find(|r| r.id == id).cloned() {
-            let new_id = self.map_rules.iter().map(|r| r.id).max().unwrap_or(0) + 1;
-            self.map_rules.push(MapRule {
-                id: new_id,
-                name: format!("{} copy", r.name),
-                hits: 0,
-                enabled: true,
-                ..r
-            });
-            self.log(Level::Info, "Map Local", "A mapping was duplicated");
-        }
-    }
-
-    fn delete_map_rule(&mut self, id: u64) {
-        self.map_rules.retain(|r| r.id != id);
-        self.log(Level::Warn, "Map Local", "A mapping was removed");
-    }
-
     fn open_bp_editor(&mut self, rule: Option<BreakpointRule>) {
         self.bp_editor = Some(match rule {
             Some(r) => BpEditor {
@@ -2401,27 +3081,6 @@ impl App {
         );
     }
 
-    fn trigger_breakpoint(&mut self, ctx: &egui::Context) {
-        let Some(c) = self.captures.get(self.selected).cloned() else {
-            return;
-        };
-        let rule = self
-            .breakpoints
-            .iter()
-            .find(|r| r.enabled && r.matches(&c.method, &c.url, &c.req_body))
-            .cloned();
-        if let Some(mut rule) = rule {
-            rule.stage = self.bp_stage_override;
-            self.open_breakpoint(c, rule, false);
-        } else {
-            let until = ctx.input(|i| i.time) + 2.4;
-            self.toast = Some(Toast {
-                text: "No breakpoint rule matches this request — use Catch this".into(),
-                until,
-            });
-        }
-    }
-
     fn continue_breakpoint(&mut self, ctx: &egui::Context) {
         let Some(s) = self.breakpoint_session.take() else {
             return;
@@ -2487,7 +3146,7 @@ impl App {
         };
         c.size_bytes = c.resp_body.len() as u64;
         if c.kind == ApiKind::Graphql {
-            c.graphql = graphql_info(&c.method, if s.stage == BpStage::Request { &c.req_body } else { &c.req_body });
+            c.graphql = graphql_info(&c.method, &c.req_body);
         }
         if s.stage == BpStage::Request && c.req_body.is_empty() {
             c.req_body = "{}".into();
@@ -2804,6 +3463,401 @@ impl App {
         }
     }
 
+    fn open_palette(&mut self) {
+        self.palette_open = true;
+        self.palette_query.clear();
+        self.palette_index = 0;
+        self.palette_focus = true;
+    }
+
+    fn palette_entries(&self) -> Vec<PaletteEntry> {
+        vec![
+            PaletteEntry {
+                group: "Screens",
+                label: "All Traffic",
+                hint: "Every captured request, with filters and search",
+                icon: NavIcon::Traffic,
+                action: PaletteAction::Go(View::Traffic),
+            },
+            PaletteEntry {
+                group: "Screens",
+                label: "Log Activity",
+                hint: "Timeline and dashboard for traffic, mocks and breakpoints",
+                icon: NavIcon::Logs,
+                action: PaletteAction::Go(View::Logs),
+            },
+            PaletteEntry {
+                group: "Screens",
+                label: "Live Capture",
+                hint: "Start the real proxy and connect a device",
+                icon: NavIcon::Live,
+                action: PaletteAction::Go(View::Live),
+            },
+            PaletteEntry {
+                group: "Screens",
+                label: "Composer",
+                hint: "Write and send a GraphQL or REST request",
+                icon: NavIcon::Composer,
+                action: PaletteAction::Go(View::Composer),
+            },
+            PaletteEntry {
+                group: "Screens",
+                label: "Map Local",
+                hint: "Answer matching requests with local JSON",
+                icon: NavIcon::Map,
+                action: PaletteAction::Go(View::MapLocal),
+            },
+            PaletteEntry {
+                group: "Screens",
+                label: "Breakpoints",
+                hint: "Pause a request, edit it, then continue or abort",
+                icon: NavIcon::Breakpoint,
+                action: PaletteAction::Go(View::Breakpoints),
+            },
+            PaletteEntry {
+                group: "Screens",
+                label: "Agent Control",
+                hint: "Loopback control plane for an IDE or agent",
+                icon: NavIcon::Agent,
+                action: PaletteAction::Go(View::Agent),
+            },
+            PaletteEntry {
+                group: "Screens",
+                label: "API Test Bench",
+                hint: "Run saved requests with pass or fail checks",
+                icon: NavIcon::Tests,
+                action: PaletteAction::Go(View::Tests),
+            },
+            PaletteEntry {
+                group: "Screens",
+                label: "Screen Play & MCP",
+                hint: "Script engine and device steps into one play",
+                icon: NavIcon::Play,
+                action: PaletteAction::Go(View::Screen),
+            },
+            PaletteEntry {
+                group: "Screens",
+                label: "Tutorial",
+                hint: "A 12-stop guided tour of every main screen",
+                icon: NavIcon::Compass,
+                action: PaletteAction::Go(View::Tutorial),
+            },
+            PaletteEntry {
+                group: "Screens",
+                label: "Guide & Stack",
+                hint: "How the app, proxy and certificates fit together",
+                icon: NavIcon::Help,
+                action: PaletteAction::Go(View::Guide),
+            },
+            PaletteEntry {
+                group: "Quick actions",
+                label: "Run practice session",
+                hint: "Send five real calls through the local proxy",
+                icon: NavIcon::Play,
+                action: PaletteAction::RunPractice,
+            },
+            PaletteEntry {
+                group: "Quick actions",
+                label: "Start guided tutorial",
+                hint: "Open the 12-stop tour from the first screen",
+                icon: NavIcon::Compass,
+                action: PaletteAction::StartTour,
+            },
+            PaletteEntry {
+                group: "Quick actions",
+                label: "Clear traffic history",
+                hint: "Remove captured rows but keep the activity log",
+                icon: NavIcon::Error,
+                action: PaletteAction::ClearTraffic,
+            },
+            PaletteEntry {
+                group: "Quick actions",
+                label: "Copy session summary",
+                hint: "Put the activity summary on the clipboard",
+                icon: NavIcon::Logs,
+                action: PaletteAction::CopySummary,
+            },
+        ]
+    }
+
+    fn palette_badge(&self, action: PaletteAction) -> Option<String> {
+        match action {
+            PaletteAction::Go(View::Traffic) => Some(format!("{} rows", self.captures.len())),
+            PaletteAction::Go(View::Logs) => Some(format!("{} events", self.logs.len())),
+            PaletteAction::Go(View::MapLocal) => Some(format!(
+                "{} on",
+                self.map_rules.iter().filter(|r| r.enabled).count()
+            )),
+            PaletteAction::Go(View::Breakpoints) => Some(format!(
+                "{} armed",
+                self.breakpoints.iter().filter(|b| b.enabled).count()
+            )),
+            _ => None,
+        }
+    }
+
+    fn palette_activate(&mut self, action: PaletteAction, ctx: &egui::Context) {
+        self.palette_open = false;
+        self.palette_query.clear();
+        self.palette_index = 0;
+        match action {
+            PaletteAction::Go(view) => {
+                self.tour = None;
+                self.share_open = false;
+                if view == View::Traffic {
+                    self.filter = TrafficFilter::All;
+                }
+                if view == View::Logs {
+                    self.log_level_filter = None;
+                }
+                self.view = view;
+            }
+            PaletteAction::StartTour => {
+                self.share_open = false;
+                self.begin_tour(0);
+            }
+            PaletteAction::RunPractice => {
+                self.view = View::Traffic;
+                self.filter = TrafficFilter::All;
+                self.start_practice_session(ctx);
+            }
+            PaletteAction::ClearTraffic => {
+                self.captures.clear();
+                self.selected = 0;
+                self.follow_latest = true;
+                self.log(
+                    Level::Warn,
+                    "System",
+                    "Traffic cleared from All features",
+                );
+            }
+            PaletteAction::CopySummary => {
+                let summary = self.summary_text();
+                self.copy(ctx, summary, "Session summary copied");
+            }
+        }
+    }
+
+    /// A searchable sheet over the whole window. It is deliberately available
+    /// from the top bar, the bottom of the rail and Cmd/Ctrl+K, so a hidden or
+    /// scrolled-away screen can always be selected without hunting.
+    fn feature_palette(&mut self, ctx: &egui::Context) {
+        if !self.palette_open {
+            return;
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.palette_open = false;
+            return;
+        }
+
+        let screen = ctx.screen_rect();
+        let mut close = false;
+        egui::Area::new(Id::new("features-backdrop"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                let resp = ui.allocate_rect(screen, Sense::click());
+                ui.painter()
+                    .rect_filled(screen, 0.0, Color32::from_black_alpha(150));
+                if resp.clicked() {
+                    close = true;
+                }
+            });
+
+        let width = 640.0_f32.min((screen.width() - 40.0).max(340.0));
+        let max_height = 620.0_f32.min((screen.height() - 44.0).max(320.0));
+        let panel_pos = screen.center() - Vec2::new(width / 2.0, max_height / 2.0);
+        let mut chosen: Option<PaletteAction> = None;
+        let mut submit = false;
+
+        let query = self.palette_query.trim().to_lowercase();
+        let entries: Vec<PaletteEntry> = self
+            .palette_entries()
+            .into_iter()
+            .filter(|entry| {
+                query.is_empty()
+                    || entry.label.to_lowercase().contains(&query)
+                    || entry.hint.to_lowercase().contains(&query)
+                    || entry.group.to_lowercase().contains(&query)
+            })
+            .collect();
+        if self.palette_index >= entries.len() {
+            self.palette_index = entries.len().saturating_sub(1);
+        }
+        let badges: Vec<Option<String>> = entries
+            .iter()
+            .map(|entry| self.palette_badge(entry.action))
+            .collect();
+
+        egui::Area::new(Id::new("features-palette"))
+            .order(egui::Order::Tooltip)
+            .fixed_pos(panel_pos)
+            .show(ctx, |ui| {
+                Frame::none()
+                    .fill(PANEL)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .rounding(14.0)
+                    .inner_margin(Margin::same(18.0))
+                    .show(ui, |ui| {
+                        ui.set_width(width - 36.0);
+                        ui.set_max_height(max_height - 36.0);
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 1.0;
+                                ui.label(
+                                    RichText::new("All features")
+                                        .size(20.0)
+                                        .strong()
+                                        .color(TEXT),
+                                );
+                                ui.label(
+                                    RichText::new(
+                                        "Every screen and action, in one list. Scroll or search to reach any.",
+                                    )
+                                    .size(10.5)
+                                    .color(MUTED),
+                                );
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if secondary_button(ui, "Close").clicked() {
+                                    close = true;
+                                }
+                                pill(
+                                    ui,
+                                    "ALWAYS AVAILABLE",
+                                    ACCENT,
+                                    Color32::from_rgba_unmultiplied(88, 140, 255, 24),
+                                );
+                            });
+                        });
+                        ui.add_space(12.0);
+
+                        Frame::none()
+                            .fill(INPUT)
+                            .stroke(Stroke::new(1.0, BORDER))
+                            .rounding(9.0)
+                            .inner_margin(Margin::symmetric(10.0, 7.0))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new("Search")
+                                            .size(9.5)
+                                            .color(FAINT)
+                                            .strong(),
+                                    );
+                                    let search_id = Id::new("palette-search");
+                                    let resp = ui.add(
+                                        egui::TextEdit::singleline(&mut self.palette_query)
+                                            .id(search_id)
+                                            .hint_text("Type a screen, tool or action")
+                                            .desired_width(f32::INFINITY)
+                                            .frame(false)
+                                            .text_color(TEXT)
+                                            .font(FontId::proportional(13.0)),
+                                    );
+                                    if self.palette_focus {
+                                        resp.request_focus();
+                                        self.palette_focus = false;
+                                    }
+                                    if resp.changed() {
+                                        self.palette_index = 0;
+                                    }
+                                    if resp.has_focus()
+                                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                    {
+                                        submit = true;
+                                    }
+                                });
+                            });
+                        ui.add_space(8.0);
+
+                        if entries.is_empty() {
+                            Frame::none()
+                                .fill(CARD)
+                                .rounding(9.0)
+                                .inner_margin(Margin::same(18.0))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.label(
+                                        RichText::new("No screen matches that search")
+                                            .size(12.5)
+                                            .color(TEXT),
+                                    );
+                                    ui.label(
+                                        RichText::new(
+                                            "Try \"traffic\", \"mock\", \"log\", \"agent\" or \"tutorial\".",
+                                        )
+                                        .size(10.0)
+                                        .color(FAINT),
+                                    );
+                                });
+                        } else {
+                            let list_h = (max_height - 250.0).clamp(160.0, 390.0);
+                            subtle_scroll(ui);
+                            ScrollArea::vertical()
+                                .max_height(list_h)
+                                .auto_shrink([false, false])
+                                .scroll_bar_visibility(
+                                    egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                                )
+                                .show(ui, |ui| {
+                                    let mut group = "";
+                                    for (index, entry) in entries.iter().enumerate() {
+                                        if entry.group != group {
+                                            if !group.is_empty() {
+                                                ui.add_space(7.0);
+                                            }
+                                            section_label(ui, entry.group);
+                                            ui.add_space(2.0);
+                                            group = entry.group;
+                                        }
+                                        let badge = badges[index].as_deref();
+                                        if palette_row(
+                                            ui,
+                                            entry,
+                                            index == self.palette_index,
+                                            badge,
+                                        )
+                                        .clicked()
+                                        {
+                                            chosen = Some(entry.action);
+                                        }
+                                    }
+                                });
+                        }
+
+                        ui.add_space(8.0);
+                        hsep(ui);
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(
+                                    "Cmd K opens this anywhere. Enter picks the first match. Esc closes.",
+                                )
+                                .size(9.5)
+                                .color(FAINT),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if !entries.is_empty()
+                                    && primary_button(ui, "Open selected").clicked()
+                                {
+                                    submit = true;
+                                }
+                            });
+                        });
+                    });
+            });
+
+        if submit && !entries.is_empty() {
+            chosen = Some(entries[self.palette_index].action);
+        }
+        if let Some(action) = chosen {
+            self.palette_activate(action, ctx);
+        } else if close {
+            self.palette_open = false;
+        }
+    }
+
     fn top_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("topbar")
             .exact_height(56.0)
@@ -2833,6 +3887,13 @@ impl App {
                     });
                     ui.add_space(10.0);
                     vsep(ui, 24.0);
+                    let features =
+                        secondary_button(ui, "Features").on_hover_text(
+                            "Every screen and action in one list (Cmd K)",
+                        );
+                    if features.clicked() {
+                        self.open_palette();
+                    }
 
                     let (rec_rect, rec_resp) =
                         ui.allocate_exact_size(Vec2::new(106.0, 28.0), Sense::click());
@@ -2910,6 +3971,17 @@ impl App {
                             self.share_open = false;
                             self.view = View::Guide;
                         }
+                        let tutorial = tool_chip(
+                            ui,
+                            "Tutorial",
+                            None,
+                            self.view == View::Tutorial || self.tour.is_some(),
+                        );
+                        if tutorial.clicked() {
+                            self.share_open = false;
+                            self.tour = None;
+                            self.view = View::Tutorial;
+                        }
                         ui.add_space(2.0);
                         vsep(ui, 22.0);
                         ui.add_space(2.0);
@@ -2942,8 +4014,20 @@ impl App {
                         if map.clicked() {
                             self.view = View::MapLocal;
                         }
+                        let logs = tool_chip(
+                            ui,
+                            "Logs",
+                            Some(self.logs.len()),
+                            self.view == View::Logs,
+                        )
+                        .on_hover_text(
+                            "Log Activity — every capture, mock and breakpoint event",
+                        );
+                        if logs.clicked() {
+                            self.view = View::Logs;
+                        }
                         ui.add_space(4.0);
-                        search_box(ui, &mut self.search, 200.0);
+                        search_box(ui, &mut self.search, 176.0);
                     });
                 });
             });
@@ -3053,9 +4137,106 @@ impl App {
     }
 
     fn sidebar(&mut self, ui: &mut Ui) {
-        // The sidebar holds seven traffic filters, six tools and a status card.
-        // Tighter vertical spacing keeps the whole rail visible at 900 px tall.
-        ui.spacing_mut().item_spacing.y = 5.0;
+        // A solid scrollbar is part of the short-window cue: the macOS-style
+        // floating bar is nearly invisible until the pointer is already there.
+        subtle_scroll(ui);
+        // The footer stays outside the scroll region, so "All features" is
+        // reachable even when a short window hides the bottom of the rail.
+        // When the rail is clipped, the footer grows by one short line that
+        // says so; without it a floating scrollbar is too easy to miss.
+        let more_id = Id::new("sidebar-more");
+        let jump_id = Id::new("sidebar-jump-bottom");
+        let show_more = ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(more_id).unwrap_or(false));
+        let footer_h = if show_more { 76.0 } else { 46.0 };
+        let content_h = (ui.available_height() - footer_h).max(120.0);
+        let mut overflow = false;
+        let jump = ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(jump_id).unwrap_or(false));
+        if jump {
+            ui.ctx().data_mut(|d| d.remove_temp::<bool>(jump_id));
+        }
+        ui.allocate_ui_with_layout(
+            Vec2::new(ui.available_width(), content_h),
+            Layout::top_down(Align::Min),
+            |ui| {
+                let mut scroll = egui::ScrollArea::vertical()
+                    .id_salt("sidebar-scroll")
+                    .max_height(content_h)
+                    .auto_shrink([false, false])
+                    .scroll_bar_visibility(
+                        egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                    );
+                if jump {
+                    scroll = scroll.vertical_scroll_offset(f32::MAX);
+                }
+                let output = scroll.show(ui, |ui| {
+                    self.sidebar_inner(ui);
+                });
+                let viewport = output.inner_rect;
+                let at_bottom = output.state.offset.y
+                    >= (output.content_size.y - viewport.height() - 2.0).max(0.0);
+                overflow =
+                    output.content_size.y > viewport.height() + 2.0 && !at_bottom;
+            },
+        );
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(more_id, overflow));
+
+        ui.add_space(2.0);
+        hsep(ui);
+        ui.add_space(1.0);
+        if overflow {
+            let (row, row_resp) = ui.allocate_exact_size(
+                Vec2::new(ui.available_width(), 14.0),
+                Sense::click(),
+            );
+            if row_resp.clicked() {
+                ui.ctx().data_mut(|d| d.insert_temp(jump_id, true));
+            }
+            let p = ui.painter();
+            let c = egui::pos2(row.left() + 7.0, row.center().y);
+            p.line_segment(
+                [egui::pos2(c.x - 3.0, c.y - 1.5), egui::pos2(c.x, c.y + 1.5)],
+                Stroke::new(1.2, MUTED),
+            );
+            p.line_segment(
+                [egui::pos2(c.x, c.y + 1.5), egui::pos2(c.x + 3.0, c.y - 1.5)],
+                Stroke::new(1.2, MUTED),
+            );
+            p.text(
+                egui::pos2(row.left() + 16.0, row.center().y),
+                Align2::LEFT_CENTER,
+                "More screens below",
+                FontId::proportional(9.2),
+                if row_resp.hovered() { TEXT } else { MUTED },
+            );
+            p.text(
+                egui::pos2(row.right(), row.center().y),
+                Align2::RIGHT_CENTER,
+                "click to scroll",
+                FontId::proportional(8.4),
+                FAINT,
+            );
+            if row_resp
+                .on_hover_text("Scroll to the bottom of the rail")
+                .hovered()
+            {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            ui.add_space(2.0);
+        } else {
+            ui.add_space(2.0);
+        }
+        if all_features_button(ui).clicked() {
+            self.open_palette();
+        }
+    }
+
+    fn sidebar_inner(&mut self, ui: &mut Ui) {
+        ui.spacing_mut().item_spacing.y = 4.0;
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             draw_mark(ui, 30.0);
@@ -3069,7 +4250,23 @@ impl App {
                 );
             });
         });
-        ui.add_space(18.0);
+        ui.add_space(10.0);
+        section_label(ui, "Start here");
+        ui.add_space(3.0);
+        let tutorial = nav_row(
+            ui,
+            NavIcon::Compass,
+            "Tutorial",
+            None,
+            self.view == View::Tutorial,
+        )
+        .on_hover_text("A guided tour of every main feature, including Agent Control");
+        if tutorial.clicked() {
+            self.tour = None;
+            self.view = View::Tutorial;
+        }
+
+        ui.add_space(9.0);
         section_label(ui, "Traffic");
         ui.add_space(3.0);
         let counts = [
@@ -3080,6 +4277,7 @@ impl App {
             (TrafficFilter::Rest, "REST API", NavIcon::Rest),
             (TrafficFilter::Errors, "Errors", NavIcon::Error),
             (TrafficFilter::Mocked, "Mocked", NavIcon::Map),
+            (TrafficFilter::Tunnels, "Tunnels", NavIcon::Shield),
         ];
         for (filter, label, icon) in counts {
             let selected = self.view == View::Traffic && self.filter == filter;
@@ -3096,41 +4294,28 @@ impl App {
             }
         }
 
-        ui.add_space(16.0);
-        section_label(ui, "Tools");
+        // Logs sit above the utilities: this is the screen that explains what
+        // happened in the session, not a hidden extra at the bottom of Tools.
+        ui.add_space(9.0);
+        section_label(ui, "Monitor");
         ui.add_space(3.0);
-        let tools = [
-            (
-                View::Live,
-                "Live Capture",
-                NavIcon::Live,
-                if self.proxy.is_some() { Some(1) } else { None },
-            ),
-            (View::Composer, "Composer", NavIcon::Composer, None),
-            (
-                View::MapLocal,
-                "Map Local",
-                NavIcon::Map,
-                Some(self.map_rules.iter().filter(|r| r.enabled).count()),
-            ),
-            (
-                View::Breakpoints,
-                "Breakpoints",
-                NavIcon::Breakpoint,
-                Some(self.breakpoints.iter().filter(|b| b.enabled).count()),
-            ),
-            (View::Logs, "Log Dashboard", NavIcon::Logs, None),
-            (View::Guide, "Guide & Stack", NavIcon::Help, None),
-        ];
-        for (view, label, icon, count) in tools {
-            let resp = nav_row(ui, icon, label, count, self.view == view);
-            if resp.clicked() {
-                self.view = view;
-            }
+        let logs = nav_row(
+            ui,
+            NavIcon::Logs,
+            "Log Activity",
+            Some(self.logs.len()),
+            self.view == View::Logs,
+        )
+        .on_hover_text("Timeline and dashboard: traffic, mocks, breakpoints and system events");
+        if logs.clicked() {
+            self.view = View::Logs;
         }
 
-        ui.add_space(12.0);
-        section_label(ui, "Automation");
+        // Automation sits above Tools deliberately: Agent Control is a main
+        // feature, not an appendix, and it was easy to miss at the bottom of
+        // a short window. The tour also points here.
+        ui.add_space(9.0);
+        section_label(ui, "Automation & agents");
         ui.add_space(3.0);
         let automation = [
             (
@@ -3159,98 +4344,239 @@ impl App {
             }
         }
 
-        let remaining = (ui.available_height() - 150.0).max(6.0);
-        ui.add_space(remaining);
-        Frame::none()
-            .fill(CARD)
-            .stroke(Stroke::new(1.0, BORDER))
-            .rounding(10.0)
-            .inner_margin(Margin::same(11.0))
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 3.0;
-                ui.horizontal(|ui| {
-                    let (r, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
-                    ui.painter()
-                        .circle_filled(r.center(), 3.5, if self.recording { GREEN } else { FAINT });
-                    ui.label(
-                        RichText::new("Capture engine")
-                            .size(11.5)
-                            .strong()
-                            .color(TEXT),
-                    );
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(ui.available_width(), 18.0),
-                        Layout::right_to_left(Align::Center),
-                        |ui| {
-                            pill(
-                                ui,
-                                if self.proxy.is_some() { "LIVE" } else { "OFF" },
-                                if self.proxy.is_some() {
-                                    Color32::from_rgb(190, 240, 215)
-                                } else {
-                                    AMBER
-                                },
-                                if self.proxy.is_some() {
-                                    Color32::from_rgb(30, 62, 49)
-                                } else {
-                                    Color32::from_rgb(58, 45, 27)
-                                },
-                            );
-                        },
-                    );
-                });
-                ui.add_space(2.0);
-                ui.label(
-                    RichText::new(if self.proxy.is_some() {
-                        "Real proxy · certificate ready"
-                    } else {
-                        "Start the proxy to capture"
-                    })
-                    .size(10.0)
-                    .color(MUTED),
-                );
-                ui.add_space(7.0);
-                hsep(ui);
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Proxy").size(10.0).color(FAINT));
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(ui.available_width(), 16.0),
-                        Layout::right_to_left(Align::Center),
-                        |ui| {
-                            ui.label(
-                                RichText::new(format!("127.0.0.1:{}", self.proxy_port))
-                                    .font(mono(9.5))
-                                    .color(MUTED),
-                            );
-                        },
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("SSL").size(10.0).color(FAINT));
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(ui.available_width(), 16.0),
-                        Layout::right_to_left(Align::Center),
-                        |ui| {
-                            ui.label(
-                                RichText::new(if self.ca_info.is_some() {
-                                    "CA generated"
-                                } else {
-                                    "No certificate"
-                                })
-                                .size(9.5)
-                                .color(FAINT),
-                            );
-                        },
-                    );
-                });
-            });
-        ui.add_space(6.0);
+        ui.add_space(8.0);
+        section_label(ui, "Tools");
+        ui.add_space(3.0);
+        let tools = [
+            (
+                View::Live,
+                "Live Capture",
+                NavIcon::Live,
+                if self.proxy.is_some() { Some(1) } else { None },
+            ),
+            (View::Composer, "Composer", NavIcon::Composer, None),
+            (
+                View::MapLocal,
+                "Map Local",
+                NavIcon::Map,
+                Some(self.map_rules.iter().filter(|r| r.enabled).count()),
+            ),
+            (
+                View::Breakpoints,
+                "Breakpoints",
+                NavIcon::Breakpoint,
+                Some(self.breakpoints.iter().filter(|b| b.enabled).count()),
+            ),
+            (View::Guide, "Guide & Stack", NavIcon::Help, None),
+        ];
+        for (view, label, icon, count) in tools {
+            let resp = nav_row(ui, icon, label, count, self.view == view);
+            if resp.clicked() {
+                self.view = view;
+            }
+        }
+
+        ui.add_space(8.0);
         ui.label(
             RichText::new("Proxzy POC 0.1 · local only")
-                .size(9.5)
-                .color(MUTED),
+                .size(9.0)
+                .color(FAINT),
         );
+    }
+
+    /// The thin strip above the traffic table. It replaces the old dead-end
+    /// "these are samples" banner with something the person can press, and it
+    /// narrates the practice run while the real calls arrive.
+    fn practice_strip(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        let Some(run) = &self.practice else {
+            let live = self.captures.iter().filter(|c| c.is_live()).count();
+            if self.captures.is_empty() || live > 0 {
+                return;
+            }
+            let mut start = false;
+            let mut go_live = false;
+            let mut start_tour = false;
+            Frame::none()
+                .fill(Color32::from_rgba_unmultiplied(255, 181, 84, 10))
+                .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 181, 84, 55)))
+                .rounding(8.0)
+                .inner_margin(Margin::symmetric(10.0, 6.0))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        dot(ui, AMBER, 6.0);
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            ui.label(
+                                RichText::new(
+                                    "These rows are samples — no device has sent anything yet.",
+                                )
+                                .size(10.5)
+                                .color(TEXT),
+                            );
+                            ui.label(
+                                RichText::new(
+                                    "Five real calls: one Map Local answer and one paused breakpoint, all on this Mac.",
+                                )
+                                .size(9.8)
+                                .color(MUTED),
+                            );
+                        });
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if primary_button(ui, "Run practice session").clicked() {
+                                start = true;
+                            }
+                            if secondary_button(ui, "Open Live Capture").clicked() {
+                                go_live = true;
+                            }
+                            if secondary_button(ui, "Start tutorial").clicked() {
+                                start_tour = true;
+                            }
+                        });
+                    });
+                });
+            ui.add_space(8.0);
+            if start {
+                self.start_practice_session(ctx);
+            } else if go_live {
+                self.view = View::Live;
+            } else if start_tour {
+                self.begin_tour(0);
+            }
+            return;
+        };
+
+        let done = run.done;
+        let total = run.total;
+        let statuses = run.statuses.clone();
+        let error = run.error.clone();
+        let answered = statuses.iter().filter(|s| s.is_some()).count();
+        let paused_at_breakpoint = self
+            .breakpoint_session
+            .as_ref()
+            .map(|s| s.live_bp_id.is_some())
+            .unwrap_or(false);
+        let (fill, stroke) = if done {
+            (
+                Color32::from_rgba_unmultiplied(61, 214, 149, 10),
+                Color32::from_rgba_unmultiplied(61, 214, 149, 55),
+            )
+        } else {
+            (
+                Color32::from_rgba_unmultiplied(88, 140, 255, 10),
+                Color32::from_rgba_unmultiplied(88, 140, 255, 60),
+            )
+        };
+        let mut hide = false;
+        let mut again = false;
+        let mut open_logs = false;
+        Frame::none()
+            .fill(fill)
+            .stroke(Stroke::new(1.0, stroke))
+            .rounding(8.0)
+            .inner_margin(Margin::symmetric(10.0, 7.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    dot(ui, if done { GREEN } else { ACCENT }, 6.0);
+                    ui.label(
+                        RichText::new(if done {
+                            "Practice session complete"
+                        } else {
+                            "Practice session running"
+                        })
+                        .size(10.8)
+                        .strong()
+                        .color(TEXT),
+                    );
+                    ui.label(
+                        RichText::new(format!(
+                            "· {} of {} calls answered · all local, nothing leaves this Mac",
+                            answered, total
+                        ))
+                        .size(10.0)
+                        .color(MUTED),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if secondary_button(ui, "Hide").clicked() {
+                            hide = true;
+                        }
+                        if secondary_button(ui, "Open logs").clicked() {
+                            open_logs = true;
+                        }
+                        if done && secondary_button(ui, "Run again").clicked() {
+                            again = true;
+                        }
+                    });
+                });
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    for (index, (label, _, _, _)) in PRACTICE_STEPS.iter().enumerate() {
+                        let status = statuses.get(index).and_then(|s| *s);
+                        let (text, color) = match status {
+                            Some(0) => (format!("{} failed", label), RED),
+                            Some(code) => (format!("{} {}", label, code), GREEN),
+                            None if paused_at_breakpoint && index == 3 => {
+                                (format!("{} paused", label), AMBER)
+                            }
+                            None => (format!("{} …", label), FAINT),
+                        };
+                        pill(
+                            ui,
+                            &text,
+                            color,
+                            Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 16),
+                        );
+                    }
+                });
+                let progress = if total == 0 {
+                    0.0
+                } else {
+                    answered as f32 / total as f32
+                };
+                ui.add_space(4.0);
+                let (bar, _) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width(), 3.0),
+                    Sense::hover(),
+                );
+                ui.painter().rect_filled(bar, 2.0, CARD);
+                let mut filled = bar;
+                filled.set_width(bar.width() * progress.clamp(0.0, 1.0));
+                ui.painter()
+                    .rect_filled(filled, 2.0, if done { GREEN } else { ACCENT });
+                if paused_at_breakpoint {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(
+                            "A call is paused by the breakpoint editor — press Continue there to release it.",
+                        )
+                        .size(9.5)
+                        .color(AMBER),
+                    );
+                } else if let Some(message) = &error {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(message).size(9.5).color(RED));
+                } else if done {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(
+                            "One call was answered by Map Local and one was paused by a breakpoint. Try the Mocked filter, or open Map Local and Log Activity to see the same events.",
+                        )
+                        .size(9.5)
+                        .color(MUTED),
+                    );
+                }
+            });
+        ui.add_space(8.0);
+        if hide {
+            self.practice = None;
+        } else if again {
+            self.start_practice_session(ctx);
+        } else if open_logs {
+            self.view = View::Logs;
+        }
     }
 
     fn traffic(&mut self, ui: &mut Ui, ctx: &egui::Context) {
@@ -3320,35 +4646,7 @@ impl App {
         ui.add_space(10.0);
 
         let live_count = self.captures.iter().filter(|c| c.is_live()).count();
-        if live_count == 0 && !self.captures.is_empty() {
-            let mut go_live = false;
-            Frame::none()
-                .fill(Color32::from_rgba_unmultiplied(255, 181, 84, 10))
-                .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 181, 84, 55)))
-                .rounding(8.0)
-                .inner_margin(Margin::symmetric(10.0, 6.0))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        dot(ui, AMBER, 6.0);
-                        ui.label(
-                            RichText::new(
-                                "These rows are samples. Start the proxy to see real device traffic.",
-                            )
-                            .size(10.5)
-                            .color(MUTED),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if secondary_button(ui, "Open Live Capture").clicked() {
-                                go_live = true;
-                            }
-                        });
-                    });
-                });
-            if go_live {
-                self.view = View::Live;
-            }
-            ui.add_space(8.0);
-        }
+        self.practice_strip(ui, ctx);
 
         ui.horizontal(|ui| {
             for (filter, label) in [
@@ -3359,6 +4657,7 @@ impl App {
                 (TrafficFilter::Graphql, "GraphQL"),
                 (TrafficFilter::Errors, "Errors"),
                 (TrafficFilter::Mocked, "Mocked"),
+                (TrafficFilter::Tunnels, "Tunnels"),
             ] {
                 if chip(ui, label, self.filter == filter).clicked() {
                     self.filter = filter;
@@ -3385,17 +4684,66 @@ impl App {
         if indices.is_empty() {
             ui.add_space(50.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new("No requests here").size(15.0).color(TEXT));
-                ui.add_space(2.0);
-                ui.label(
-                    RichText::new("Try another filter, clear the search, or capture again.")
+                if self.captures.is_empty() {
+                    ui.label(RichText::new("No traffic has reached the gate yet").size(15.0).color(TEXT));
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new(if self.proxy.is_some() {
+                            "The proxy is listening, but nothing has used it. A simulator uses this Mac's proxy route, so it must be switched on too."
+                        } else {
+                            "Start the proxy first, then point the simulator or app at this Mac."
+                        })
                         .size(11.5)
                         .color(MUTED),
-                );
-                ui.add_space(8.0);
-                if secondary_button(ui, "Show all traffic").clicked() {
-                    self.filter = TrafficFilter::All;
-                    self.search.clear();
+                    );
+                    ui.add_space(8.0);
+                    if primary_button(ui, "Run capture check").clicked() {
+                        self.start_capture_check(ctx);
+                    }
+                    if secondary_button(ui, "Run practice session").clicked() {
+                        self.start_practice_session(ctx);
+                    }
+                    if secondary_button(ui, "Open Live Capture").clicked() {
+                        self.view = View::Live;
+                    }
+                } else if self.filter == TrafficFilter::Live && live_count == 0 {
+                    ui.label(RichText::new("No live calls yet").size(15.0).color(TEXT));
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "The {} rows under All Traffic are sample rows for learning — no device has sent anything. Press Run capture check to send one real request, or run the practice session to see capture, mock and breakpoint work.",
+                            self.captures.len()
+                        ))
+                        .size(11.5)
+                        .color(MUTED),
+                    );
+                    ui.add_space(8.0);
+                    if primary_button(ui, "Run practice session").clicked() {
+                        self.start_practice_session(ctx);
+                    }
+                    if secondary_button(ui, "Show sample session").clicked() {
+                        self.filter = TrafficFilter::All;
+                        self.search.clear();
+                    }
+                    if secondary_button(ui, "Run capture check").clicked() {
+                        self.start_capture_check(ctx);
+                    }
+                } else {
+                    ui.label(RichText::new("No requests here").size(15.0).color(TEXT));
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new("Try another filter, clear the search, or capture again.")
+                            .size(11.5)
+                            .color(MUTED),
+                    );
+                    ui.add_space(8.0);
+                    if secondary_button(ui, "Show all traffic").clicked() {
+                        self.filter = TrafficFilter::All;
+                        self.search.clear();
+                    }
+                    if secondary_button(ui, "Run practice session").clicked() {
+                        self.start_practice_session(ctx);
+                    }
                 }
             });
             return;
@@ -3657,7 +5005,7 @@ impl App {
                 ui,
                 w,
                 "STATUS",
-                &status_text(c.status),
+                status_text(c.status),
                 status_color(c.status),
             );
         });
@@ -4340,6 +5688,119 @@ fn nav_row(
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// The pinned "All features" control at the bottom of the rail. It is always
+/// visible, even when the scrollable list is clipped on a short window.
+fn all_features_button(ui: &mut Ui) -> egui::Response {
+    let width = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 32.0), Sense::click());
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        8.0,
+        if resp.hovered() { HOVER } else { CARD },
+        Stroke::new(1.0, BORDER),
+    );
+    // A small four-square "all screens" glyph, drawn rather than using a font.
+    let origin = egui::pos2(rect.left() + 11.0, rect.center().y - 5.5);
+    for (dx, dy) in [(0.0, 0.0), (6.0, 0.0), (0.0, 6.0), (6.0, 6.0)] {
+        painter.rect_filled(
+            Rect::from_min_size(
+                egui::pos2(origin.x + dx, origin.y + dy),
+                Vec2::splat(4.5),
+            ),
+            1.2,
+            ACCENT,
+        );
+    }
+    painter.text(
+        egui::pos2(rect.left() + 28.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        "All features",
+        FontId::proportional(11.5),
+        TEXT,
+    );
+    painter.text(
+        egui::pos2(rect.right() - 10.0, rect.center().y),
+        Align2::RIGHT_CENTER,
+        if cfg!(target_os = "macos") { "Cmd K" } else { "Ctrl K" },
+        FontId::monospace(8.5),
+        FAINT,
+    );
+    resp.on_hover_text("Every screen and action in one list")
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// One two-line row in the all-features palette. Painted directly so the
+/// label and its explanation share the same click target.
+fn palette_row(
+    ui: &mut Ui,
+    entry: &PaletteEntry,
+    selected: bool,
+    badge: Option<&str>,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), 46.0),
+        Sense::click(),
+    );
+    let painter = ui.painter();
+    if selected {
+        painter.rect_filled(
+            rect,
+            8.0,
+            Color32::from_rgba_unmultiplied(88, 140, 255, 28),
+        );
+        painter.rect_filled(
+            Rect::from_min_max(rect.min, egui::pos2(rect.left() + 3.0, rect.bottom())),
+            1.5,
+            ACCENT,
+        );
+    } else if resp.hovered() {
+        painter.rect_filled(rect, 8.0, HOVER);
+    }
+    let icon_rect = Rect::from_center_size(
+        egui::pos2(rect.left() + 18.0, rect.center().y),
+        Vec2::splat(18.0),
+    );
+    paint_nav_icon(
+        painter,
+        icon_rect,
+        entry.icon,
+        if selected {
+            Color32::from_rgb(165, 195, 255)
+        } else {
+            MUTED
+        },
+    );
+    painter.text(
+        egui::pos2(rect.left() + 38.0, rect.center().y - 7.0),
+        Align2::LEFT_CENTER,
+        entry.label,
+        FontId::proportional(12.5),
+        if selected {
+            Color32::from_rgb(220, 232, 255)
+        } else {
+            TEXT
+        },
+    );
+    painter.text(
+        egui::pos2(rect.left() + 38.0, rect.center().y + 8.0),
+        Align2::LEFT_CENTER,
+        entry.hint,
+        FontId::proportional(9.5),
+        FAINT,
+    );
+    if let Some(badge) = badge {
+        painter.text(
+            egui::pos2(rect.right() - 12.0, rect.center().y),
+            Align2::RIGHT_CENTER,
+            badge,
+            FontId::monospace(9.0),
+            if selected { ACCENT } else { FAINT },
+        );
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 fn tool_chip(ui: &mut Ui, label: &str, count: Option<usize>, active: bool) -> egui::Response {
     let (fg, bg, stroke) = if active {
         (
@@ -4907,6 +6368,99 @@ pub fn port_has_listener(port: u16) -> bool {
     std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
 }
 
+/// The round trip used by the connection card: one absolute-form request goes
+/// through the real listener, the proxy answers it locally and records it.
+fn capture_check_request(port: u16, nonce: u64) -> Result<u16, String> {
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpStream};
+
+    let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))
+        .map_err(|e| format!("Could not reach 127.0.0.1:{} ({})", port, e))?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(6)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
+    let request = format!(
+        "GET http://proxzy.gateway/__proxzy/check?nonce={} HTTP/1.1\r\nHost: proxzy.gateway\r\nUser-Agent: Proxzy-Capture-Check\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
+        nonce
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("Could not write the check request: {}", e))?;
+    let mut buffer = Vec::new();
+    // The status line is enough to prove the gate answered. A read timeout
+    // after the body is harmless, so the result is deliberately ignored.
+    let _ = stream.read_to_end(&mut buffer);
+    let text = String::from_utf8_lossy(&buffer);
+    let status = text
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| "The gate closed without an HTTP answer".to_string())?;
+    if status == 200 {
+        Ok(status)
+    } else {
+        Err(format!("The gate answered HTTP {}", status))
+    }
+}
+
+/// One call from the practice session. It uses the same absolute-form request
+/// shape as a device: through the listener, closed after the answer.
+fn practice_request(port: u16, method: &str, path: &str, body: &str) -> Result<u16, String> {
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpStream};
+
+    let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))
+        .map_err(|e| format!("Could not reach 127.0.0.1:{} ({})", port, e))?;
+    // A paused breakpoint can hold the call for up to three minutes, so the
+    // read timeout is patient; the person is the one who releases it.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(185)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let mut request = format!(
+        "{method} http://{host}{path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Proxzy-Practice/1.0\r\nAccept: application/json\r\nConnection: close\r\n",
+        method = method,
+        host = crate::proxy::PRACTICE_HOST,
+        path = path
+    );
+    if !body.is_empty() {
+        request.push_str("Content-Type: application/json\r\n");
+        request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    request.push_str("\r\n");
+    request.push_str(body);
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("Could not write the practice call: {}", e))?;
+    let mut buffer = Vec::new();
+    let _ = stream.read_to_end(&mut buffer);
+    let text = String::from_utf8_lossy(&buffer);
+    text.lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| "The gate closed without an HTTP answer".to_string())
+}
+
+/// Read the web proxy for every enabled network service. This is read-only:
+/// it never changes the Mac's network settings.
+pub fn read_all_web_proxies() -> Vec<WebProxyState> {
+    enabled_network_services()
+        .into_iter()
+        .filter_map(|service| {
+            let out = std::process::Command::new("networksetup")
+                .args(["-getwebproxy", &service])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            Some(parse_web_proxy_block(&service, &text))
+        })
+        .collect()
+}
+
 /// Scan every enabled network service and report the ones whose web proxy
 /// points at one of Proxzy's own ports. Both cases matter at launch: a live
 /// port is an older Proxzy session whose setting we should adopt and restore
@@ -4932,18 +6486,126 @@ pub fn find_local_web_proxies() -> Vec<WebProxyState> {
         .collect()
 }
 
-/// Scan every enabled network service and report the ones whose web proxy
-/// points at a dead local port.
-pub fn find_stale_web_proxies() -> Vec<WebProxyState> {
-    find_local_web_proxies()
-        .into_iter()
-        .filter(|state| !port_has_listener(state.port))
-        .collect()
-}
-
 #[cfg(test)]
 mod helper_tests {
     use super::*;
+
+    #[test]
+    fn practice_session_is_a_real_round_trip_through_the_gate() {
+        let port = {
+            let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        let (tx, rx) = channel();
+        let mut handle = crate::proxy::start_with_options(
+            crate::proxy::ProxyStartOptions {
+                port,
+                ..crate::proxy::ProxyStartOptions::default()
+            },
+            tx,
+        )
+        .expect("practice test proxy should start");
+
+        let success = r#"{"source":"practice-mock","products":[]}"#;
+        let mock = MapRule {
+            id: 1,
+            name: "Practice · Products mock".into(),
+            folder: "Practice".into(),
+            pattern: "*/demo/products*".into(),
+            method: RuleMethod::Get,
+            status: 200,
+            content_type: "application/json".into(),
+            delay_ms: 0,
+            body: success.into(),
+            graphql_name: String::new(),
+            enabled: true,
+            hits: 0,
+            active_scenario: MockScenario::Success,
+            success_status: 200,
+            success_body: success.into(),
+            error_status: 500,
+            error_body: "{}".into(),
+            empty_status: 200,
+            empty_body: "{}".into(),
+            inject_props: std::collections::HashMap::new(),
+            app_version: String::new(),
+            env: String::new(),
+        };
+        let bp = BreakpointRule {
+            id: 1,
+            name: "Practice · Pause checkout".into(),
+            pattern: "*/demo/checkout*".into(),
+            graphql_name: String::new(),
+            stage: BpStage::Request,
+            enabled: true,
+            hits: 0,
+        };
+        let mut cfg = crate::proxy::ProxyConfig::default();
+        cfg.recording = true;
+        cfg.map_enabled = true;
+        cfg.map_rules = vec![mock];
+        cfg.catch_enabled = true;
+        cfg.breakpoints = vec![bp];
+        handle.update(cfg);
+
+        let client_port = handle.port;
+        let client = std::thread::spawn(move || {
+            let mut statuses = Vec::new();
+            for (index, (_, method, path, body)) in PRACTICE_STEPS.iter().enumerate() {
+                if index > 0 {
+                    std::thread::sleep(Duration::from_millis(40));
+                }
+                statuses.push(practice_request(client_port, method, path, body).unwrap_or(0));
+            }
+            statuses
+        });
+
+        let mut captures = Vec::new();
+        let mut mocked = false;
+        let mut paused_request = None;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while captures.len() < PRACTICE_STEPS.len() && Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(crate::proxy::ProxyEvent::Capture(capture)) => {
+                    if capture.mock.is_some() {
+                        mocked = true;
+                    }
+                    captures.push(*capture);
+                }
+                Ok(crate::proxy::ProxyEvent::Breakpoint(bp)) => {
+                    paused_request = Some(*bp);
+                }
+                Ok(_) => {}
+                Err(_) => {}
+            }
+            if let Some(bp) = paused_request.take() {
+                handle.resolve(
+                    bp.id,
+                    crate::proxy::BpDecision::Continue {
+                        method: bp.method,
+                        url: bp.url,
+                        headers: bp.headers,
+                        body: bp.body,
+                    },
+                );
+            }
+        }
+        let statuses = client.join().unwrap_or_default();
+        handle.stop();
+
+        assert_eq!(
+            captures.len(),
+            PRACTICE_STEPS.len(),
+            "every practice call should be recorded"
+        );
+        assert!(mocked, "one practice call must be answered by Map Local");
+        assert!(
+            captures.iter().any(|c| c.status == 401),
+            "the practice orders call should be a real 401"
+        );
+        assert_eq!(statuses.len(), PRACTICE_STEPS.len());
+        assert!(statuses.iter().all(|s| *s > 0));
+    }
 
     #[test]
     fn finds_uuid_in_simctl_line() {
@@ -5112,3 +6774,4 @@ mod helper_tests {
 include!("views.rs");
 include!("rules_ui.rs");
 include!("studio_ui.rs");
+include!("tour_ui.rs");

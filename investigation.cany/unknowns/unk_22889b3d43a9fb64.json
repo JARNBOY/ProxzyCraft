@@ -1,15 +1,15 @@
 {
   "id": "unk_22889b3d43a9fb64",
-  "revision": 2,
+  "revision": 3,
   "question": "How does the original present GraphQL operations and breakpoint editing in detail?",
   "severity": "low",
   "domain": "behaviour",
-  "status": "investigating",
+  "status": "blocked",
   "probes": [
     "Screenshots of a GraphQL request selected",
     "Screenshot of a paused breakpoint"
   ],
   "evidence_for": [],
   "evidence_against": [],
-  "resolution": "Still open; no screenshots of GraphQL selection or a paused breakpoint were available. Implemented from the request text: GraphQL requests show operation name/type and variables, and the breakpoint modal edits method, URL, headers and request or response body with Continue/Abort. Exact wording and arrangement in the original are unknown."
+  "resolution": "Blocked by the clean-room rule: no picture of GraphQL selection or a paused breakpoint exists in the workspace, and the original cannot be opened. The POC therefore defines its own presentation from the request text: GraphQL requests show operation name/type and variables, and the breakpoint modal edits method, URL, headers and request or response body with Continue/Abort. Exact wording and arrangement in the original remain unknown; this does not affect behaviour."
 }

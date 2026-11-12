@@ -19,14 +19,52 @@ use crate::model::{pattern_matches_url, MapRule, MockScenario};
 pub enum TargetPlatform {
     Mac,
     IosSimulator,
+    IosDevice,
     AndroidEmulator,
     AndroidDevice,
 }
 
+/// How a physical Android phone reaches the proxy.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AndroidTransport {
+    /// Safe default: `adb reverse` keeps the listener on loopback.
+    UsbReverse,
+    /// Untethered: the phone uses the Mac's LAN address, which requires the
+    /// explicit LAN opt-in and a control token.
+    WifiLan,
+}
+
+impl AndroidTransport {
+    pub const ALL: [AndroidTransport; 2] =
+        [AndroidTransport::UsbReverse, AndroidTransport::WifiLan];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AndroidTransport::UsbReverse => "USB · adb reverse",
+            AndroidTransport::WifiLan => "Wi-Fi · LAN address",
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            AndroidTransport::UsbReverse => "usb-reverse",
+            AndroidTransport::WifiLan => "wifi-lan",
+        }
+    }
+
+    pub fn from_slug(value: &str) -> Self {
+        match value {
+            "wifi-lan" | "wifi" | "lan" => AndroidTransport::WifiLan,
+            _ => AndroidTransport::UsbReverse,
+        }
+    }
+}
+
 impl TargetPlatform {
-    pub const ALL: [TargetPlatform; 4] = [
+    pub const ALL: [TargetPlatform; 5] = [
         TargetPlatform::Mac,
         TargetPlatform::IosSimulator,
+        TargetPlatform::IosDevice,
         TargetPlatform::AndroidEmulator,
         TargetPlatform::AndroidDevice,
     ];
@@ -35,6 +73,7 @@ impl TargetPlatform {
         match self {
             TargetPlatform::Mac => "This Mac",
             TargetPlatform::IosSimulator => "iOS Simulator",
+            TargetPlatform::IosDevice => "iPhone (Wi-Fi)",
             TargetPlatform::AndroidEmulator => "Android emulator",
             TargetPlatform::AndroidDevice => "Android phone",
         }
@@ -44,6 +83,7 @@ impl TargetPlatform {
         match self {
             TargetPlatform::Mac => "MAC",
             TargetPlatform::IosSimulator => "iOS SIM",
+            TargetPlatform::IosDevice => "IPHONE",
             TargetPlatform::AndroidEmulator => "ANDROID EMU",
             TargetPlatform::AndroidDevice => "ANDROID",
         }
@@ -53,6 +93,7 @@ impl TargetPlatform {
         match self {
             TargetPlatform::Mac => "mac",
             TargetPlatform::IosSimulator => "ios-sim",
+            TargetPlatform::IosDevice => "ios-device",
             TargetPlatform::AndroidEmulator => "android-emu",
             TargetPlatform::AndroidDevice => "android-device",
         }
@@ -61,20 +102,15 @@ impl TargetPlatform {
     pub fn from_slug(value: &str) -> Self {
         match value {
             "ios-sim" | "ios" => TargetPlatform::IosSimulator,
+            "ios-device" | "iphone" => TargetPlatform::IosDevice,
             "android-emu" | "android" => TargetPlatform::AndroidEmulator,
             "android-device" => TargetPlatform::AndroidDevice,
             _ => TargetPlatform::Mac,
         }
     }
 
-    /// The proxy listens on loopback only, which is the safe default. Simulators
-    /// share the Mac's loopback; an Android device reaches it through `adb
-    /// reverse`, so the address is loopback everywhere.
-    pub fn host(self) -> &'static str {
-        "127.0.0.1"
-    }
-
     /// The bridge needed before the app under test can see the engine.
+    #[cfg(test)]
     pub fn bridge_command(self, port: u16) -> Option<String> {
         match self {
             TargetPlatform::AndroidEmulator | TargetPlatform::AndroidDevice => {
@@ -90,13 +126,47 @@ impl TargetPlatform {
             TargetPlatform::IosSimulator => {
                 "The simulator shares this Mac's loopback; no port bridge is needed."
             }
+            TargetPlatform::IosDevice => {
+                "A physical iPhone uses this Mac's LAN address; turn on LAN access and install the .cer profile."
+            }
             TargetPlatform::AndroidEmulator => {
                 "Run adb reverse once so the emulator's localhost points at this Mac."
             }
             TargetPlatform::AndroidDevice => {
-                "Run adb reverse with the phone's serial so localhost points at this Mac."
+                "Use adb reverse over USB, or switch to Wi-Fi and the Mac's LAN address."
             }
         }
+    }
+}
+
+/// The address to write into a device snippet for the chosen target.
+pub fn host_for_target(
+    platform: TargetPlatform,
+    lan_ip: &str,
+    transport: AndroidTransport,
+) -> String {
+    match platform {
+        TargetPlatform::IosDevice => lan_ip.to_string(),
+        TargetPlatform::AndroidDevice => match transport {
+            AndroidTransport::UsbReverse => "127.0.0.1".to_string(),
+            AndroidTransport::WifiLan => lan_ip.to_string(),
+        },
+        _ => "127.0.0.1".to_string(),
+    }
+}
+
+/// Bridge command for a specific transport. Wi-Fi targets need no adb bridge.
+pub fn bridge_command_for(
+    platform: TargetPlatform,
+    port: u16,
+    transport: AndroidTransport,
+) -> Option<String> {
+    match (platform, transport) {
+        (TargetPlatform::AndroidEmulator, _) => Some(format!("adb reverse tcp:{port} tcp:{port}")),
+        (TargetPlatform::AndroidDevice, AndroidTransport::UsbReverse) => {
+            Some(format!("adb reverse tcp:{port} tcp:{port}"))
+        }
+        _ => None,
     }
 }
 
@@ -105,10 +175,6 @@ pub fn resolve_url(template: &str, port: u16) -> String {
     template
         .replace("{host}", "127.0.0.1")
         .replace("{port}", &port.to_string())
-}
-
-pub fn proxy_url(port: u16) -> String {
-    format!("http://127.0.0.1:{}", port)
 }
 
 // ---------------------------------------------------------------------------
@@ -738,70 +804,171 @@ pub fn parse_inject(value: &str) -> Option<(String, String)> {
 }
 
 /// The environment a UI-test launch passes to the app under test.
+#[cfg(test)]
 pub fn env_block(port: u16, play_name: &str) -> String {
+    env_block_for("127.0.0.1", port, play_name, None)
+}
+
+pub fn env_block_for(
+    host: &str,
+    port: u16,
+    play_name: &str,
+    control_token: Option<&str>,
+) -> String {
+    let token_line = control_token
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("\nPROXZY_CONTROL_TOKEN={}", t))
+        .unwrap_or_default();
     format!(
-        "PROXZY_PROXY_URL={}\nPROXZY_HOST=127.0.0.1\nPROXZY_PORT={}\nPROXZY_SESSION={}\nPROXZY_SCENARIO=success",
-        proxy_url(port),
-        port,
-        play_name
+        "PROXZY_PROXY_URL=http://{}:{}\nPROXZY_HOST={}\nPROXZY_PORT={}\nPROXZY_SESSION={}\nPROXZY_SCENARIO=success{}",
+        host, port, host, port, play_name, token_line
     )
 }
 
+#[cfg(test)]
 pub fn xctest_snippet(port: u16, play_name: &str) -> String {
+    xctest_snippet_for("127.0.0.1", port, play_name, None)
+}
+
+pub fn xctest_snippet_for(
+    host: &str,
+    port: u16,
+    play_name: &str,
+    control_token: Option<&str>,
+) -> String {
+    let token_line = control_token
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("\napp.launchEnvironment[\"PROXZY_CONTROL_TOKEN\"] = \"{}\"", t))
+        .unwrap_or_default();
     format!(
-        "// XCUITest — pass the port config into the app\nlet app = XCUIApplication()\napp.launchEnvironment[\"PROXZY_PROXY_URL\"] = \"{}\"\napp.launchEnvironment[\"PROXZY_PORT\"] = \"{}\"\napp.launchEnvironment[\"PROXZY_SESSION\"] = \"{}\"\napp.launchEnvironment[\"PROXZY_SCENARIO\"] = \"success\"\napp.launch()",
-        proxy_url(port),
-        port,
-        play_name
+        "// XCUITest — pass the proxy config into the app (device on Wi-Fi: http://{host}:{port}/ca.cer)\nlet app = XCUIApplication()\napp.launchEnvironment[\"PROXZY_PROXY_URL\"] = \"http://{host}:{port}\"\napp.launchEnvironment[\"PROXZY_PORT\"] = \"{port}\"\napp.launchEnvironment[\"PROXZY_SESSION\"] = \"{play_name}\"\napp.launchEnvironment[\"PROXZY_SCENARIO\"] = \"success\"{token_line}\napp.launch()"
     )
 }
 
+#[cfg(test)]
 pub fn espresso_snippet(port: u16, play_name: &str) -> String {
+    espresso_snippet_for("127.0.0.1", port, play_name, None)
+}
+
+pub fn espresso_snippet_for(
+    host: &str,
+    port: u16,
+    play_name: &str,
+    control_token: Option<&str>,
+) -> String {
+    let token_extra = control_token
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("\n  putExtra(\"PROXZY_CONTROL_TOKEN\", \"{}\")", t))
+        .unwrap_or_default();
+    let bridge_hint = if host == "127.0.0.1" {
+        format!("// adb reverse tcp:{port} tcp:{port}\n")
+    } else {
+        format!("// Wi-Fi LAN proxy: http://{host}:{port} (install /ca.cer on device)\n")
+    };
     format!(
-        "// Android UI test — bridge the port, then launch with the same config\n// adb reverse tcp:{port} tcp:{port}\nval intent = Intent(context, MainActivity::class.java).apply {{\n  putExtra(\"PROXZY_PROXY_URL\", \"{}\")\n  putExtra(\"PROXZY_PORT\", \"{port}\")\n  putExtra(\"PROXZY_SESSION\", \"{}\")\n}}\n// Point the app at 127.0.0.1:{port} (the adb reverse target)\n// or set: adb shell settings put global http_proxy 127.0.0.1:{port}",
-        proxy_url(port),
-        play_name
+        "// Android UI test — pass proxy config into the test intent\n{bridge_hint}val intent = Intent(context, MainActivity::class.java).apply {{\n  putExtra(\"PROXZY_PROXY_URL\", \"http://{host}:{port}\")\n  putExtra(\"PROXZY_PORT\", \"{port}\")\n  putExtra(\"PROXZY_SESSION\", \"{play_name}\"){token_extra}\n}}\n// adb shell settings put global http_proxy {host}:{port}"
     )
 }
 
+#[cfg(test)]
 pub fn playwright_snippet(port: u16, play_name: &str) -> String {
+    playwright_snippet_for("127.0.0.1", port, play_name)
+}
+
+pub fn playwright_snippet_for(host: &str, port: u16, play_name: &str) -> String {
     format!(
-        "// playwright.config.ts — send browser traffic through Proxzy\nexport default {{\n  use: {{\n    proxy: {{ server: '{}' }},\n    ignoreHTTPSErrors: true,\n    extraHTTPHeaders: {{ 'X-Proxzy-Session': '{}' }},\n  }},\n}};",
-        proxy_url(port),
-        play_name
+        "// playwright.config.ts — send browser traffic through Proxzy\nexport default {{\n  use: {{\n    proxy: {{ server: 'http://{host}:{port}' }},\n    ignoreHTTPSErrors: true,\n    extraHTTPHeaders: {{ 'X-Proxzy-Session': '{play_name}' }},\n  }},\n}};"
     )
 }
 
+#[cfg(test)]
 pub fn mcp_snippet(port: u16, play_name: &str) -> String {
+    mcp_snippet_for("127.0.0.1", port, play_name, None)
+}
+
+pub fn mcp_snippet_for(
+    host: &str,
+    port: u16,
+    play_name: &str,
+    control_token: Option<&str>,
+) -> String {
+    let token_entry = control_token
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| format!(",\n        \"PROXZY_CONTROL_TOKEN\": \"{}\"", escape_json(t)))
+        .unwrap_or_default();
     format!(
-        "{{\n  \"mcpServers\": {{\n    \"mobilewright\": {{\n      \"command\": \"<your mobilewright MCP command>\",\n      \"env\": {{\n        \"PROXZY_PROXY_URL\": \"{}\",\n        \"PROXZY_PORT\": \"{}\",\n        \"PROXZY_SESSION\": \"{}\",\n        \"PROXZY_SCENARIO\": \"success\"\n      }}\n    }}\n  }}\n}}",
-        proxy_url(port),
-        port,
-        play_name
+        "{{\n  \"mcpServers\": {{\n    \"mobilewright\": {{\n      \"command\": \"<your mobilewright MCP command>\",\n      \"env\": {{\n        \"PROXZY_PROXY_URL\": \"http://{host}:{port}\",\n        \"PROXZY_PORT\": \"{port}\",\n        \"PROXZY_SESSION\": \"{play_name}\",\n        \"PROXZY_SCENARIO\": \"success\"{token_entry}\n      }}\n    }}\n  }}\n}}"
     )
 }
 
+fn token_header_arg(control_token: Option<&str>) -> String {
+    control_token
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| format!(" \\\n  -H 'X-Proxzy-Control: {}'", t))
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
 pub fn inject_curl(port: u16, target: &str, key: &str, value: &str) -> String {
+    inject_curl_for("127.0.0.1", port, target, key, value, None)
+}
+
+pub fn inject_curl_for(
+    host: &str,
+    port: u16,
+    target: &str,
+    key: &str,
+    value: &str,
+    control_token: Option<&str>,
+) -> String {
     format!(
-        "curl -s -X POST {} \\\n  -H 'content-type: application/json' \\\n  -d '{{\"pattern\":\"{}\",\"inject\":{{\"{}\":\"{}\"}}}}'",
-        format!("http://127.0.0.1:{}/__proxzy/inject", port),
+        "curl -s -X POST http://{}:{}/__proxzy/inject{} \\\n  -H 'content-type: application/json' \\\n  -d '{{\"pattern\":\"{}\",\"inject\":{{\"{}\":\"{}\"}}}}'",
+        host,
+        port,
+        token_header_arg(control_token),
         escape_json(target),
         escape_json(key),
         escape_json(value)
     )
 }
 
+#[cfg(test)]
 pub fn scenario_curl(port: u16, target: &str, scenario: &str) -> String {
+    scenario_curl_for("127.0.0.1", port, target, scenario, None)
+}
+
+pub fn scenario_curl_for(
+    host: &str,
+    port: u16,
+    target: &str,
+    scenario: &str,
+    control_token: Option<&str>,
+) -> String {
     format!(
-        "curl -s -X POST {} \\\n  -H 'content-type: application/json' \\\n  -d '{{\"pattern\":\"{}\",\"scenario\":\"{}\"}}'",
-        format!("http://127.0.0.1:{}/__proxzy/scenario", port),
+        "curl -s -X POST http://{}:{}/__proxzy/scenario{} \\\n  -H 'content-type: application/json' \\\n  -d '{{\"pattern\":\"{}\",\"scenario\":\"{}\"}}'",
+        host,
+        port,
+        token_header_arg(control_token),
         escape_json(target),
         escape_json(scenario)
     )
 }
 
+#[cfg(test)]
 pub fn health_curl(port: u16) -> String {
-    format!("curl -s http://127.0.0.1:{}/__proxzy/health", port)
+    health_curl_for("127.0.0.1", port, None)
+}
+
+pub fn health_curl_for(host: &str, port: u16, control_token: Option<&str>) -> String {
+    match control_token.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => format!("curl -s -H 'X-Proxzy-Control: {}' http://{}:{}/__proxzy/health", t, host, port),
+        None => format!("curl -s http://{}:{}/__proxzy/health", host, port),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1404,8 +1571,54 @@ mod tests {
     fn platform_bridge_is_only_needed_for_android() {
         assert_eq!(TargetPlatform::Mac.bridge_command(9090), None);
         assert_eq!(TargetPlatform::IosSimulator.bridge_command(9090), None);
+        assert_eq!(TargetPlatform::IosDevice.bridge_command(9090), None);
         assert_eq!(
             TargetPlatform::AndroidEmulator.bridge_command(9090).as_deref(),
+            Some("adb reverse tcp:9090 tcp:9090")
+        );
+    }
+
+    #[test]
+    fn physical_devices_choose_usb_or_lan_addresses() {
+        assert_eq!(
+            host_for_target(
+                TargetPlatform::IosDevice,
+                "192.168.1.20",
+                AndroidTransport::UsbReverse
+            ),
+            "192.168.1.20"
+        );
+        assert_eq!(
+            host_for_target(
+                TargetPlatform::AndroidDevice,
+                "192.168.1.20",
+                AndroidTransport::UsbReverse
+            ),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            host_for_target(
+                TargetPlatform::AndroidDevice,
+                "192.168.1.20",
+                AndroidTransport::WifiLan
+            ),
+            "192.168.1.20"
+        );
+        assert_eq!(
+            bridge_command_for(
+                TargetPlatform::AndroidDevice,
+                9090,
+                AndroidTransport::WifiLan
+            ),
+            None
+        );
+        assert_eq!(
+            bridge_command_for(
+                TargetPlatform::AndroidDevice,
+                9090,
+                AndroidTransport::UsbReverse
+            )
+            .as_deref(),
             Some("adb reverse tcp:9090 tcp:9090")
         );
     }
@@ -1533,6 +1746,16 @@ mod tests {
         assert!(inject_curl(9092, "Wallet balance", "phone", "081")
             .contains("127.0.0.1:9092/__proxzy/inject"));
         assert!(scenario_curl(9092, "Wallet balance", "error").contains("\"scenario\":\"error\""));
+        assert!(health_curl(9092).contains("127.0.0.1:9092/__proxzy/health"));
+        let lan_env = env_block_for("192.168.1.20", 9090, "Wallet", Some("proxzy_tok"));
+        assert!(lan_env.contains("PROXZY_PROXY_URL=http://192.168.1.20:9090"));
+        assert!(lan_env.contains("PROXZY_CONTROL_TOKEN=proxzy_tok"));
+        assert!(health_curl_for("192.168.1.20", 9090, Some("proxzy_tok"))
+            .contains("-H 'X-Proxzy-Control: proxzy_tok'"));
+        assert!(xctest_snippet_for("192.168.1.20", 9090, "Wallet", Some("proxzy_tok"))
+            .contains("http://192.168.1.20:9090"));
+        assert!(espresso_snippet_for("192.168.1.20", 9090, "Wallet", None)
+            .contains("http://192.168.1.20:9090"));
     }
 
     #[test]

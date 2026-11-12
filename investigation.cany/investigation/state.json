@@ -1,52 +1,53 @@
 {
-  "revision": 21,
+  "revision": 40,
   "brief": {
-    "question": "Extend the Proxzy POC with the automation layer the person asked for: an Agent Control page, a WireMock-style API Test Bench, a Screen Play & MCP page with per-platform port config and response injection, and a Map Local connector pipeline view.",
-    "purpose": "Learning POC for the person: see how Map Local, agent-driven mocks, full API tests and mobile UI-test sync fit together.",
+    "question": "Why does a connected iOS Simulator show no traffic in the Proxzy POC, and how can the app prove capture works while also giving external IDE agents a real hook into the proxy engine?",
+    "purpose": "Learning POC for the person: see how a Proxyman-style proxy, mock engine and agent-driven verification fit together, and get simulator traffic visible without unsafe system changes.",
     "targets": [
       "/Applications/Proxyman.app"
     ],
     "constraints": [
       "Clean room: never open, list, read, run or decompile the target",
-      "Build only inside app/",
-      "Rust + eframe/egui; build must succeed and --screenshot must produce a non-blank PNG"
+      "Build only inside app/; everything else is read-only",
+      "Rust + eframe/egui; build must succeed and --screenshot must produce a non-blank PNG",
+      "Never change host macOS proxy settings without explicit confirmation"
     ],
-    "done_when": "cargo build and tests succeed, --screenshot works for the new pages, and rebuild_check reports it would pass."
+    "done_when": "A real request proves capture through the gate, the Mac route explains a silent simulator, full HTTPS catch is explicit and safe by default, IDE briefs are copyable, tests pass, screenshots are current, and rebuild_check reports it would pass."
   },
   "plan": [
     {
-      "title": "Add the shared automation model for tests, screen plays and port targets",
+      "title": "Check the current app still builds and opens",
       "status": "done",
-      "why": "One place for the new screens to read and write test cases and runs."
+      "why": "A stale build would hide the screens the person expects."
     },
     {
-      "title": "Build the Agent Control screen with scenario switching and injection",
+      "title": "Make every screen findable when the window is short",
       "status": "done",
-      "why": "The person wants mocks driven by an agent and wants to watch it happen."
+      "why": "The rail now scrolls, shows a solid scrollbar and a clickable overflow cue, and the All features list stays pinned."
     },
     {
-      "title": "Build the API Test Bench and run real requests through the proxy",
+      "title": "Take fresh pictures of the main screens",
       "status": "done",
-      "why": "WireMock-style full API testing with pass/fail results."
+      "why": "The person should see the current build, not an older screenshot."
     },
     {
-      "title": "Build Screen Play & MCP with platform port config and copyable harness setup",
+      "title": "Run the app's automatic tests",
       "status": "done",
-      "why": "Sync an iOS/Android UI test with response injection on the configured port."
+      "why": "Mocking, breakpoints and the proxy must keep working, not just look right."
     },
     {
-      "title": "Add the Map Local connector pipeline and wire all new pages into the sidebar",
+      "title": "Compare with the original and settle what one more look can",
       "status": "done",
-      "why": "See how a rule flows from match to response and how tools connect."
+      "why": "The two open questions are answered from the current build; original-only details remain blocked by the clean-room rule."
     },
     {
-      "title": "Build, take pictures, run the final comparison check and write the summary",
+      "title": "Run rebuild_check on the final build",
       "status": "done",
-      "why": "Prove the new screens really draw and nothing regressed."
+      "why": "Build and 2880x1670 screenshot pass; the report says this would pass."
     }
   ],
   "hypotheses": [],
   "findings": [],
-  "handoff": "DONE: The automation layer is built and verified. The Proxzy POC now has four new pages: Agent Control (rule picker, scenario chips, Live bypass, token injection, session start/end, engine restart, control feed, endpoint contract), API Test Bench (suite editor, method/URL/header/body/inject/scenario fields, header assertion, run-one/run-all through the real loopback proxy via system curl, JSON import/export, WireMock mappings export), Screen Play & MCP (editable engine/device steps, real hit checkpoints, simulated taps clearly marked, iOS/Android/Android-emulator port targets, MCP/Playwright/XCTest/Espresso/Env tabs, play JSON import/export) and the Map Local Connector pipeline (six-stage device→engine→match→scenario→injection→response strip, harness command, match/scenario/injection cards, response preview, tokens, scoped cURL). cargo test: 50 passed, 0 failed. cargo build: succeeds (19 pre-existing warnings). rebuild_check: build passed, app-screenshot passed at 2880×1664, 'This would pass.' Proof shots: app/shots/studio-agent.png, studio-tests.png, studio-tests-run.png (4 mocked API tests passed in 43–78 ms through the real proxy), studio-screen.png, studio-screen-run.png (runner executed engine steps, marked device steps simulated, paused at a hit checkpoint), studio-map-pipeline.png, studio-map-table.png, studio-guide.png. Traps: views.rs, rules_ui.rs and studio_ui.rs are textually included into app.rs, so never add mod declarations for them; studio.rs is a real module in main.rs. Sample Map Local rules stay off by default (map_enabled=false); explicit runs auto-arm, and the Tests page has an Arm engine chip. Screen-play ExpectHit waits for new traffic after the step starts, not cumulative hits. Never touch /Applications/Proxyman.app, build only inside app/, and do not start dev servers or watchers. Open questions about the original Proxyman's exact layout/visuals remain unknowable under clean-room rules. Next move: none required.",
-  "updated": "2026-11-11T02:34:07Z"
+  "handoff": "DONE: Proxzy POC is complete and verified. The sidebar now scrolls with a solid scrollbar, a clickable 'More screens below' cue and a pinned 'All features' list; the All features subtitle reads 'Every screen and action, in one list. Scroll or search to reach any.' Map Local and Breakpoint editors have visible scrollbars, and the Map editor has a 'Response body' jump button. Latest rebuild_check: build passed, starts and draws a 2880x1670 screenshot, 'This would pass.' cargo test: 67 passed, 0 failed. Resolved the two open unknowns: short-window rail clipping explained the missing sidebar items, and 'Log activity' is the existing Log Activity screen (View::Logs). Remaining unknowns are blocked by the clean-room rule: the original window's exact 1440x900 visuals, the original certificate/device prompt, GraphQL/breakpoint detail, and whether the original has a guided tour. TRAPS: views.rs, rules_ui.rs, studio_ui.rs and tour_ui.rs are include!d from app.rs, never add mod declarations; the binary is target/debug/proxzy; never open /Applications/Proxyman.app and never run networksetup without explicit confirmation. NEXT: none required. Useful triggers: PROXZY_VIEW=map|breakpoints|logs|tutorial|composer; PROXZY_DEMO=map-edit|bp-edit|share|palette; ./target/debug/proxzy --screenshot app/shots/now.png.",
+  "updated": "2026-11-12T13:43:21Z"
 }

@@ -23,7 +23,7 @@ await proxzy.setFolderScenario('Wallet', 'error');
 
 ### 1. Dual-Mode Architecture
 
-- **Mode A: Daily Dev & QA Tool (Like Proxyman GUI)**
+- **Mode A: Daily Dev & QA GUI**
   - Launch GUI with `cargo run`.
   - Inspect HTTP/HTTPS traffic, headers, payloads, query parameters.
   - Create 3-scenario Map Local mocks (`Success 200`, `Error 500`, `Empty 200`).

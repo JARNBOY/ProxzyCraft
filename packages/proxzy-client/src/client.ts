@@ -102,6 +102,10 @@ export interface SessionStartOptions {
 export interface ProxzyClientOptions {
   baseUrl?: string;
   timeoutMs?: number;
+  /** Optional control token for LAN/non-loopback proxy sessions (`PROXZY_CONTROL_TOKEN`). */
+  controlToken?: string;
+  /** Explicitly permit sending `controlToken` to a non-loopback `baseUrl` (default `false`). */
+  allowRemoteControl?: boolean;
 }
 
 /**
@@ -114,10 +118,17 @@ export interface ProxzyClientOptions {
 export class ProxzyClient {
   readonly baseUrl: string;
   readonly timeoutMs: number;
+  readonly controlToken?: string;
+  readonly allowRemoteControl: boolean;
 
   constructor(options: ProxzyClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? 'http://127.0.0.1:9090').replace(/\/$/, '');
     this.timeoutMs = options.timeoutMs ?? 5000;
+    const envToken = (
+      globalThis as { process?: { env?: Record<string, string | undefined> } }
+    ).process?.env?.PROXZY_CONTROL_TOKEN;
+    this.controlToken = options.controlToken ?? (envToken || undefined);
+    this.allowRemoteControl = options.allowRemoteControl ?? false;
   }
 
   /**
@@ -387,13 +398,36 @@ export class ProxzyClient {
   }
 
   private async fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
+    const parsed = new URL(url);
+    const isLoopback = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(
+      parsed.hostname.toLowerCase(),
+    );
+    if (this.controlToken && !isLoopback && !this.allowRemoteControl) {
+      throw new Error(
+        `Refusing to send X-Proxzy-Control to non-loopback host "${parsed.hostname}" without allowRemoteControl: true`,
+      );
+    }
+
+    const headers = new Headers(options.headers);
+    if (this.controlToken) {
+      headers.set('X-Proxzy-Control', this.controlToken);
+    }
+
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      return await fetch(url, {
+      const res = await fetch(url, {
         ...options,
+        headers,
         signal: controller.signal,
       });
+      if (res.status === 401 || res.status === 403) {
+        const text = await res.text().catch(() => '');
+        throw new Error(
+          `Proxzy control request rejected (${res.status} Forbidden): ${text || 'verify Host header and X-Proxzy-Control token'}`,
+        );
+      }
+      return res;
     } finally {
       clearTimeout(id);
     }

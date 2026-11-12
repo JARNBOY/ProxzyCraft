@@ -199,7 +199,7 @@ impl App {
                             .color(FAINT)
                             .strong(),
                     );
-                    let body_w = (ui.available_width() - 190.0).max(150.0);
+                    let body_w = (ui.available_width() - 320.0).max(150.0);
                     input_frame().show(ui, |ui| {
                         ui.set_width(body_w);
                         ui.add(
@@ -252,8 +252,10 @@ impl App {
         }
 
         // ---- two panes: rules table + live tester --------------------------
-        let total = ui.available_width();
-        let right_w = (total * 0.34).clamp(290.0, 360.0);
+        // Leave a little room on the right: a long fixture path or URL in the
+        // rule cards can make the left pane a few pixels wider than its slot.
+        let total = (ui.available_width() - 56.0).max(600.0);
+        let right_w = (total * 0.34).clamp(280.0, 350.0);
         let left_w = (total - right_w - 16.0).max(430.0);
         let mut edit_existing: Option<MapRule> = None;
         let mut toggle_id: Option<u64> = None;
@@ -589,7 +591,7 @@ impl App {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.map_test_url)
                                             .frame(false)
-                                            .desired_width(f32::INFINITY)
+                                            .desired_width(ui.available_width())
                                             .font(TextStyle::Monospace)
                                             .text_color(TEXT)
                                             .hint_text("https://api.shopwave.dev/v1/products?limit=20"),
@@ -968,8 +970,10 @@ impl App {
         });
         ui.add_space(10.0);
 
-        let total = ui.available_width();
-        let right_w = (total * 0.34).clamp(290.0, 360.0);
+        // Keep the right rail inside the window even when a long URL or
+        // pattern makes the left cards a little wider than their slot.
+        let total = (ui.available_width() - 56.0).max(600.0);
+        let right_w = (total * 0.34).clamp(280.0, 350.0);
         let left_w = (total - right_w - 16.0).max(430.0);
         let mut edit_existing: Option<BreakpointRule> = None;
         let mut toggle_id: Option<u64> = None;
@@ -1250,7 +1254,7 @@ impl App {
                                         ui.add(
                                             egui::TextEdit::singleline(&mut self.bp_test_url)
                                                 .frame(false)
-                                                .desired_width(f32::INFINITY)
+                                                .desired_width(ui.available_width())
                                                 .font(TextStyle::Monospace)
                                                 .text_color(TEXT)
                                                 .hint_text("*/v1/checkout?*"),
@@ -1427,6 +1431,7 @@ impl App {
         let selected = self.captures.get(self.selected).cloned();
         let mut save = false;
         let mut cancel = false;
+        let mut jump_response = false;
 
         egui::Area::new(Id::new("map_editor_dim"))
             .order(egui::Order::Middle)
@@ -1473,14 +1478,29 @@ impl App {
                                     if icon_button(ui, "x", "Close").clicked() {
                                         cancel = true;
                                     }
+                                    if secondary_button(ui, "Response body")
+                                        .on_hover_text("Scroll down to the mocked JSON body")
+                                        .clicked()
+                                    {
+                                        jump_response = true;
+                                    }
                                 });
                             });
                             ui.add_space(8.0);
 
-                            ScrollArea::vertical()
+                            // A visible bar makes the response section
+                            // reachable instead of hiding below a dim edge.
+                            subtle_scroll(ui);
+                            let mut area = ScrollArea::vertical()
                                 .auto_shrink([false, false])
                                 .max_height(574.0)
-                                .show(ui, |ui| {
+                                .scroll_bar_visibility(
+                                    egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                                );
+                            if jump_response {
+                                area = area.vertical_scroll_offset(f32::MAX);
+                            }
+                            area.show(ui, |ui| {
                                     section_label(ui, "Quick import from cURL or direct URL");
                                     ui.add_space(4.0);
                                     ui.horizontal(|ui| {
@@ -1591,10 +1611,10 @@ impl App {
                                                 ed.pattern.push('*');
                                             }
                                         }
-                                        if secondary_button(ui, "Include subpaths").clicked() {
-                                            if !ed.pattern.ends_with('*') {
-                                                ed.pattern.push('*');
-                                            }
+                                        if secondary_button(ui, "Include subpaths").clicked()
+                                            && !ed.pattern.ends_with('*')
+                                        {
+                                            ed.pattern.push('*');
                                         }
                                         if secondary_button(ui, "Use selected request").clicked() {
                                             if let Some(c) = &selected {

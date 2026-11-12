@@ -55,20 +55,27 @@ pub fn mono(size: f32) -> FontId {
     FontId::new(size, FontFamily::Monospace)
 }
 
+/// A thin, always-visible scrollbar for lists where the cut edge matters:
+/// the left rail, the all-features sheet and the mapping editor. The default
+/// macOS-style floating bar is invisible until the pointer is already on it,
+/// which makes a clipped list look complete. The handle is kept muted so it
+/// reads as an edge, not as a selected row.
+pub fn subtle_scroll(ui: &mut Ui) {
+    ui.spacing_mut().scroll.floating = false;
+    ui.spacing_mut().scroll.foreground_color = false;
+    ui.spacing_mut().scroll.bar_width = 6.0;
+    ui.spacing_mut().scroll.bar_inner_margin = 2.0;
+    ui.visuals_mut().widgets.inactive.bg_fill = Color32::from_rgb(64, 71, 84);
+    ui.visuals_mut().widgets.hovered.bg_fill = Color32::from_rgb(92, 103, 122);
+    ui.visuals_mut().widgets.active.bg_fill = ACCENT;
+}
+
 pub fn card() -> Frame {
     Frame::none()
         .fill(CARD)
         .stroke(Stroke::new(1.0, BORDER))
         .rounding(12.0)
         .inner_margin(Margin::same(16.0))
-}
-
-pub fn soft_card() -> Frame {
-    Frame::none()
-        .fill(PANEL)
-        .stroke(Stroke::new(1.0, BORDER))
-        .rounding(10.0)
-        .inner_margin(Margin::same(12.0))
 }
 
 pub fn input_frame() -> Frame {
@@ -86,10 +93,6 @@ pub fn section_label(ui: &mut Ui, text: &str) {
             .color(FAINT)
             .strong(),
     );
-}
-
-pub fn muted(ui: &mut Ui, text: impl Into<String>) {
-    ui.label(RichText::new(text).size(12.0).color(MUTED));
 }
 
 pub fn dot(ui: &mut Ui, color: Color32, size: f32) {
@@ -482,17 +485,9 @@ pub enum NavIcon {
     Agent,
     Tests,
     Play,
+    Shield,
     Help,
-}
-
-pub fn draw_nav_icon(ui: &mut Ui, kind: NavIcon, active: bool) {
-    let color = if active {
-        Color32::from_rgb(165, 195, 255)
-    } else {
-        MUTED
-    };
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
-    paint_nav_icon(ui.painter(), rect, kind, color);
+    Compass,
 }
 
 pub fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, kind: NavIcon, color: Color32) {
@@ -702,6 +697,25 @@ pub fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, kind: NavIcon, 
             p.line_segment([a, c], stroke);
             p.line_segment([b, c], stroke);
         }
+        NavIcon::Shield => {
+            let top = egui::pos2(r.center().x, r.top() + 0.5);
+            let left = egui::pos2(r.left() + 0.5, r.top() + 3.0);
+            let right = egui::pos2(r.right() - 0.5, r.top() + 3.0);
+            let bottom_left = egui::pos2(r.left() + 2.5, r.bottom() - 1.0);
+            let bottom_right = egui::pos2(r.right() - 2.5, r.bottom() - 1.0);
+            p.add(egui::Shape::closed_line(
+                vec![top, right, bottom_right, bottom_left, left],
+                stroke,
+            ));
+            p.circle_filled(r.center() + Vec2::new(0.0, -0.5), 1.6, color);
+            p.line_segment(
+                [
+                    r.center() + Vec2::new(0.0, 1.0),
+                    r.center() + Vec2::new(0.0, 3.5),
+                ],
+                stroke,
+            );
+        }
         NavIcon::Help => {
             p.circle_stroke(r.center(), 6.5, stroke);
             p.text(
@@ -711,6 +725,17 @@ pub fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, kind: NavIcon, 
                 FontId::proportional(9.0),
                 color,
             );
+        }
+        NavIcon::Compass => {
+            p.circle_stroke(r.center(), 6.5, stroke);
+            let north = r.center() + Vec2::new(1.6, -4.5);
+            let south = r.center() + Vec2::new(-1.6, 4.5);
+            let east = r.center() + Vec2::new(4.5, 1.6);
+            let west = r.center() + Vec2::new(-4.5, -1.6);
+            p.add(egui::Shape::closed_line(
+                vec![north, east, south, west],
+                Stroke::new(1.1, color),
+            ));
         }
     }
 }

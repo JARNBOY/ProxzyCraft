@@ -24,19 +24,88 @@ use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
-use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 const MAX_HEAD: usize = 128 * 1024;
 const MAX_BODY: usize = 12 * 1024 * 1024;
+const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_CONNECTIONS: usize = 128;
+
+/// The hostname the in-app practice session calls. It never leaves the machine:
+/// the proxy answers it itself, after Breakpoints and Map Local have run, so the
+/// learning demo walks the same code path as a real device request.
+pub const PRACTICE_HOST: &str = "practice.proxzy.gateway";
+
+/// How the listener is allowed to be reached.
+///
+/// The safe default is loopback only: nothing on the network can see the proxy
+/// or its certificate. A LAN listener is only created with an explicit opt-in
+/// and always carries an ephemeral control token, so a phone on the same Wi-Fi
+/// can use the proxy but cannot drive `/__proxzy/*` without the token.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BindPolicy {
+    LoopbackOnly,
+    Lan {
+        advertised_ip: String,
+        control_token: String,
+    },
+}
+
+impl BindPolicy {
+    pub fn is_lan(&self) -> bool {
+        matches!(self, BindPolicy::Lan { .. })
+    }
+
+    pub fn control_token(&self) -> Option<&str> {
+        match self {
+            BindPolicy::Lan { control_token, .. } => Some(control_token),
+            BindPolicy::LoopbackOnly => None,
+        }
+    }
+
+    pub fn advertised_ip(&self) -> Option<&str> {
+        match self {
+            BindPolicy::Lan { advertised_ip, .. } => Some(advertised_ip),
+            BindPolicy::LoopbackOnly => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ListenerBinding {
+    pub bind_ip: IpAddr,
+    pub port: u16,
+    pub policy: BindPolicy,
+}
+
+impl ListenerBinding {
+    pub fn display_address(&self) -> String {
+        match self.policy.advertised_ip() {
+            Some(ip) if self.bind_ip.is_unspecified() => format!("{}:{}", ip, self.port),
+            _ => format!("{}:{}", self.bind_ip, self.port),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ProxyStartOptions {
+    pub port: u16,
+    /// Opt-in LAN listening. The UI and the CLI both leave this off by default.
+    pub lan_enabled: bool,
+    /// Optional explicit bind address; `--lan` uses 0.0.0.0 when omitted.
+    pub bind_ip: Option<IpAddr>,
+    /// Optional fixed control token, useful for automated test runs.
+    pub control_token: Option<String>,
+}
 
 #[derive(Clone, Debug)]
 pub struct CaInfo {
@@ -72,8 +141,8 @@ pub enum ProxyEvent {
     Stopped,
     Capture(Box<Capture>),
     Log { level: String, message: String },
-    Breakpoint(LiveBreakpoint),
-    RemoteConfigUpdated(ProxyConfig),
+    Breakpoint(Box<LiveBreakpoint>),
+    RemoteConfigUpdated(Box<ProxyConfig>),
     /// A call to the in-band control plane (`/__proxzy/*`), surfaced in the
     /// Agent Control feed so the person can watch an agent drive the engine.
     Control { method: String, path: String, ok: bool },
@@ -88,6 +157,10 @@ pub struct ProxyConfig {
     pub catch_enabled: bool,
     pub breakpoints: Vec<BreakpointRule>,
     pub ssl_proxying_enabled: bool,
+    /// Explicit opt-in "full catch": decrypt every HTTPS host, still keeping
+    /// protected Apple system services on a raw tunnel. Off by default so a
+    /// host browser is never surprised by an untrusted certificate.
+    pub intercept_all: bool,
     pub ssl_allowlist: Vec<String>,
     pub auto_record: bool,
     pub auto_record_domains: Vec<String>,
@@ -103,6 +176,7 @@ impl Default for ProxyConfig {
             catch_enabled: false,
             breakpoints: Vec::new(),
             ssl_proxying_enabled: true,
+            intercept_all: false,
             ssl_allowlist: Vec::new(),
             auto_record: false,
             auto_record_domains: Vec::new(),
@@ -116,12 +190,18 @@ impl ProxyConfig {
         if !self.ssl_proxying_enabled {
             return false;
         }
+        // Full catch is a deliberate switch in the connection card. It still
+        // leaves Apple's protected services on the raw-tunnel path (checked by
+        // the caller), so system updates and push keep working.
+        if self.intercept_all {
+            return true;
+        }
         if self.ssl_allowlist.is_empty() {
             return false; // Safe default: blind tunnel everything unless explicitly whitelisted
         }
         self.ssl_allowlist
             .iter()
-            .any(|pat| crate::model::domain_matches(pat, host))
+            .any(|pat| pat == "*" || crate::model::domain_matches(pat, host))
     }
 }
 
@@ -136,9 +216,9 @@ pub struct ProxyHandle {
     pub port: u16,
     pub config: Arc<RwLock<ProxyConfig>>,
     pub ca: CaInfo,
+    pub binding: Arc<ListenerBinding>,
     shutdown: Arc<AtomicBool>,
     decisions: Arc<Mutex<HashMap<u64, BpDecision>>>,
-    paused: Arc<Mutex<Vec<LiveBreakpoint>>>,
     notify: Arc<Notify>,
     join: Option<std::thread::JoinHandle<()>>,
 }
@@ -155,13 +235,6 @@ impl ProxyHandle {
             guard.insert(id, decision);
         }
         self.notify.notify_waiters();
-    }
-
-    pub fn pending(&self) -> Vec<LiveBreakpoint> {
-        self.paused
-            .lock()
-            .map(|p| p.clone())
-            .unwrap_or_default()
     }
 
     pub fn stop(&mut self) {
@@ -197,6 +270,7 @@ pub fn ensure_ca() -> Result<CaInfo, String> {
     let (_key, cert_pem) = if pem_path.exists() && key_path.exists() {
         let key_text = std::fs::read_to_string(&key_path)
             .map_err(|e| format!("Cannot read CA key: {}", e))?;
+        restrict_permissions(&key_path);
         let cert_text = std::fs::read_to_string(&pem_path)
             .map_err(|e| format!("Cannot read CA certificate: {}", e))?;
         let key = KeyPair::from_pem(&key_text).map_err(|e| format!("Bad CA key: {}", e))?;
@@ -223,7 +297,7 @@ pub fn ensure_ca() -> Result<CaInfo, String> {
         let cert_text = cert.pem();
         std::fs::write(&pem_path, &cert_text)
             .map_err(|e| format!("Cannot save CA certificate: {}", e))?;
-        std::fs::write(&key_path, key.serialize_pem())
+        write_secret_file(&key_path, key.serialize_pem().as_bytes())
             .map_err(|e| format!("Cannot save CA key: {}", e))?;
         (key, cert_text)
     };
@@ -327,14 +401,56 @@ fn load_ca() -> Result<Ca, String> {
 }
 
 pub fn start(port: u16, tx: Sender<ProxyEvent>) -> Result<ProxyHandle, String> {
+    start_with_options(
+        ProxyStartOptions {
+            port,
+            ..ProxyStartOptions::default()
+        },
+        tx,
+    )
+}
+
+pub fn start_with_options(
+    options: ProxyStartOptions,
+    tx: Sender<ProxyEvent>,
+) -> Result<ProxyHandle, String> {
     let ca = load_ca()?;
     let ca_info = ca.info.clone();
     let ca_info_thread = ca_info.clone();
+
+    let bind_ip = options.bind_ip.unwrap_or(if options.lan_enabled {
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+    } else {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    });
+    let lan_enabled = options.lan_enabled || !bind_ip.is_loopback();
+    let policy = if lan_enabled {
+        let token = options
+            .control_token
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(generate_control_token);
+        let token_path = app_data_dir().join("control.token");
+        write_control_token(&token_path, &token)?;
+        let advertised_ip = crate::devices::host_ip().unwrap_or_else(|| "127.0.0.1".to_string());
+        BindPolicy::Lan {
+            advertised_ip,
+            control_token: token,
+        }
+    } else {
+        BindPolicy::LoopbackOnly
+    };
+    let binding = Arc::new(ListenerBinding {
+        bind_ip,
+        port: options.port,
+        policy,
+    });
+
     let config = Arc::new(RwLock::new(ProxyConfig::default()));
     let shutdown = Arc::new(AtomicBool::new(false));
     let decisions: Arc<Mutex<HashMap<u64, BpDecision>>> = Arc::new(Mutex::new(HashMap::new()));
     let paused: Arc<Mutex<Vec<LiveBreakpoint>>> = Arc::new(Mutex::new(Vec::new()));
     let notify = Arc::new(Notify::new());
+    let semaphore = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<u16, String>>();
 
     let cfg_thread = config.clone();
@@ -344,6 +460,8 @@ pub fn start(port: u16, tx: Sender<ProxyEvent>) -> Result<ProxyHandle, String> {
     let notify_thread = notify.clone();
     let tx_thread = tx.clone();
     let ca_thread = Arc::new(ca);
+    let binding_thread = binding.clone();
+    let semaphore_thread = semaphore.clone();
 
     let join = std::thread::Builder::new()
         .name("proxzy-proxy".into())
@@ -360,24 +478,34 @@ pub fn start(port: u16, tx: Sender<ProxyEvent>) -> Result<ProxyHandle, String> {
                 }
             };
             runtime.block_on(async move {
-                let listener = match TcpListener::bind(("127.0.0.1", port)).await {
+                let listener = match TcpListener::bind((binding_thread.bind_ip, binding_thread.port)).await {
                     Ok(l) => l,
                     Err(e) => {
                         let _ = ready_tx.send(Err(format!(
                             "Port {} is already in use: {}",
-                            port, e
+                            binding_thread.port, e
                         )));
                         return;
                     }
                 };
-                let _ = ready_tx.send(Ok(port));
+                let _ = ready_tx.send(Ok(binding_thread.port));
                 let _ = tx_thread.send(ProxyEvent::Started {
-                    port,
+                    port: binding_thread.port,
                     ca: ca_info_thread.clone(),
                 });
                 let _ = tx_thread.send(ProxyEvent::Log {
                     level: "Info".into(),
-                    message: format!("Proxy listening on 127.0.0.1:{} (HTTP + HTTPS)", port),
+                    message: if binding_thread.policy.is_lan() {
+                        format!(
+                            "Proxy listening on {} (LAN opt-in; control token required)",
+                            binding_thread.display_address()
+                        )
+                    } else {
+                        format!(
+                            "Proxy listening on {} (HTTP + HTTPS, local only)",
+                            binding_thread.display_address()
+                        )
+                    },
                 });
                 run_listener(
                     listener,
@@ -388,6 +516,8 @@ pub fn start(port: u16, tx: Sender<ProxyEvent>) -> Result<ProxyHandle, String> {
                     notify_thread,
                     tx_thread,
                     ca_thread,
+                    binding_thread,
+                    semaphore_thread,
                 )
                 .await;
             });
@@ -399,9 +529,9 @@ pub fn start(port: u16, tx: Sender<ProxyEvent>) -> Result<ProxyHandle, String> {
             port: bound,
             config,
             ca: ca_info,
+            binding,
             shutdown,
             decisions,
-            paused,
             notify,
             join: Some(join),
         }),
@@ -416,6 +546,66 @@ pub fn start(port: u16, tx: Sender<ProxyEvent>) -> Result<ProxyHandle, String> {
     }
 }
 
+fn generate_control_token() -> String {
+    let mut bytes = [0u8; 32];
+    let filled = std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut bytes))
+        .is_ok();
+    if !filled {
+        // A KeyPair is a CSPRNG-backed fallback when /dev/urandom is unavailable.
+        if let Ok(key) = KeyPair::generate() {
+            let digest = Sha256::digest(key.serialize_der());
+            bytes.copy_from_slice(&digest[..32]);
+        }
+    }
+    format!("proxzy_{}", hex::encode(bytes))
+}
+
+fn write_control_token(path: &Path, token: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Cannot create {}: {}", parent.display(), e))?;
+    }
+    write_secret_file(path, token.as_bytes())
+        .map_err(|e| format!("Cannot save control token: {}", e))
+}
+
+fn write_secret_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path)?;
+    file.write_all(data)?;
+    restrict_permissions(path);
+    Ok(())
+}
+
+fn restrict_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    let a = left.as_bytes();
+    let b = right.as_bytes();
+    let mut diff = a.len() ^ b.len();
+    let len = a.len().max(b.len());
+    for index in 0..len {
+        let av = a.get(index).copied().unwrap_or(0);
+        let bv = b.get(index).copied().unwrap_or(0);
+        diff |= usize::from(av ^ bv);
+    }
+    diff == 0
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_listener(
     listener: TcpListener,
@@ -426,6 +616,8 @@ async fn run_listener(
     notify: Arc<Notify>,
     tx: Sender<ProxyEvent>,
     ca: Arc<Ca>,
+    binding: Arc<ListenerBinding>,
+    semaphore: Arc<Semaphore>,
 ) {
     loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -438,6 +630,10 @@ async fn run_listener(
         .await;
         match accepted {
             Ok(Ok((stream, peer))) => {
+                let permit = match semaphore.clone().acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => break,
+                };
                 let shutdown_task = shutdown.clone();
                 let ctx = ConnCtx {
                     config: config.clone(),
@@ -447,9 +643,11 @@ async fn run_listener(
                     tx: tx.clone(),
                     ca: ca.clone(),
                     shutdown: shutdown_task,
+                    binding: binding.clone(),
                 };
                 let task_tx = tx.clone();
                 tokio::spawn(async move {
+                    let _permit = permit;
                     if let Err(e) = handle_connection(stream, peer, ctx).await {
                         // Connection resets are normal when an app is closed.
                         if !e.contains("closed") && !e.contains("reset") {
@@ -461,7 +659,10 @@ async fn run_listener(
                     }
                 });
             }
-            Ok(Err(_)) => continue,
+            Ok(Err(e)) => {
+                let _ = tx.send(ProxyEvent::Error(format!("Proxy listener: {}", e)));
+                continue;
+            }
             Err(_) => continue,
         }
     }
@@ -477,6 +678,7 @@ struct ConnCtx {
     tx: Sender<ProxyEvent>,
     ca: Arc<Ca>,
     shutdown: Arc<AtomicBool>,
+    binding: Arc<ListenerBinding>,
 }
 
 async fn handle_connection(
@@ -564,7 +766,8 @@ async fn passthrough_tunnel(
 ) -> Result<(), String> {
     let started = Instant::now();
     let addr = format!("{}:{}", host, port);
-    let mut upstream = tokio::time::timeout(Duration::from_secs(15), TcpStream::connect(&addr))
+    let upstream_addr = resolve_upstream(host, port, peer, &ctx.binding).await?;
+    let mut upstream = tokio::time::timeout(Duration::from_secs(15), TcpStream::connect(upstream_addr))
         .await
         .map_err(|_| format!("Connect to {} timed out", addr))?
         .map_err(|e| format!("Connect to {}: {}", addr, e))?;
@@ -589,10 +792,7 @@ async fn passthrough_tunnel(
     });
 
     let copy_res = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
-    let (c2s, s2c) = match copy_res {
-        Ok(bytes) => bytes,
-        Err(_) => (0, 0),
-    };
+    let (c2s, s2c) = copy_res.unwrap_or_default();
     let total_bytes = c2s + s2c;
     let latency_ms = started.elapsed().as_millis() as u64;
 
@@ -677,18 +877,83 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let started = Instant::now();
+    let is_tls = scheme == "https";
     let control_path = origin_path(&url);
-    if control_path.starts_with("/__proxzy")
-        || request.target.starts_with("/__proxzy")
-        || host.eq_ignore_ascii_case("proxzy.local")
-    {
-        let resp = handle_proxzy_control(&request, &control_path, &ctx);
-        let _ = ctx.tx.send(ProxyEvent::Control {
+    match classify_service_request(&request.target, &host, port, is_tls, &ctx.binding) {
+        ServiceRoute::ControlPlane => {
+            if let Err(reason) = authorize_control(peer, &request.headers, &ctx.binding) {
+                let resp = control_denied(reason);
+                let _ = ctx.tx.send(ProxyEvent::Control {
+                    method: request.method.clone(),
+                    path: control_path.split('?').next().unwrap_or(&control_path).to_string(),
+                    ok: false,
+                });
+                write_response(client, &resp, request.method == "HEAD").await?;
+                return Ok(());
+            }
+            let resp = handle_proxzy_control(&request, &control_path, &ctx);
+            let _ = ctx.tx.send(ProxyEvent::Control {
+                method: request.method.clone(),
+                path: control_path.split('?').next().unwrap_or(&control_path).to_string(),
+                ok: resp.status < 400,
+            });
+            write_response(client, &resp, request.method == "HEAD").await?;
+            return Ok(());
+        }
+        ServiceRoute::Portal => {
+            let resp = handle_portal(&request, &control_path, &ctx);
+            write_response(client, &resp, request.method == "HEAD").await?;
+            return Ok(());
+        }
+        ServiceRoute::ProxyForward => {}
+    }
+
+    // 0) A local self-test target. The connection card sends one real request
+    // through the listener; the proxy answers it and records it, so "can you
+    // see my traffic?" is answered with evidence instead of a guess. This is
+    // deliberately local: the check works with no network and no certificate.
+    if host.eq_ignore_ascii_case("proxzy.gateway") {
+        let nonce = query_value(&url, "nonce").unwrap_or_default();
+        let body = format!(
+            "{{\"ok\":true,\"gate\":\"proxzy\",\"nonce\":\"{}\",\"note\":\"This request travelled through the proxy and was recorded.\"}}",
+            escape_json(&nonce)
+        );
+        let headers = vec![
+            ("content-type".into(), "application/json".into()),
+            ("x-proxzy-selftest".into(), "capture".into()),
+            ("cache-control".into(), "no-store".into()),
+        ];
+        let resp = make_response(200, "OK", headers.clone(), body.clone().into_bytes());
+        write_response(client, &resp, request.method.eq_ignore_ascii_case("HEAD")).await?;
+
+        let latency = started.elapsed().as_millis() as u64;
+        let capture = Capture {
+            id: 0,
             method: request.method.clone(),
-            path: control_path.split('?').next().unwrap_or(&control_path).to_string(),
-            ok: resp.status < 400,
+            url: url.clone(),
+            status: 200,
+            latency_ms: latency.max(1),
+            size_bytes: body.len() as u64,
+            kind: ApiKind::Rest,
+            started: now_stamp(),
+            remote: "proxzy.gateway · local gate".into(),
+            protocol: "HTTP/1.1".into(),
+            req_headers: request.headers.clone(),
+            req_body: String::from_utf8_lossy(&request.body).to_string(),
+            resp_headers: headers,
+            resp_body: body,
+            graphql: None,
+            mock: None,
+            pinned: false,
+            aborted: false,
+        };
+        if ctx.config.read().map(|c| c.recording).unwrap_or(true) {
+            let _ = ctx.tx.send(ProxyEvent::Capture(Box::new(capture)));
+        }
+        let _ = ctx.tx.send(ProxyEvent::Log {
+            level: "Info".into(),
+            message: "Capture check: request reached the gate and was recorded".into(),
         });
-        write_response(client, &resp, request.method == "HEAD").await?;
         return Ok(());
     }
 
@@ -715,7 +980,7 @@ where
         if let Ok(mut p) = ctx.paused.lock() {
             p.push(pending.clone());
         }
-        let _ = ctx.tx.send(ProxyEvent::Breakpoint(pending.clone()));
+        let _ = ctx.tx.send(ProxyEvent::Breakpoint(Box::new(pending.clone())));
         let _ = ctx.tx.send(ProxyEvent::Log {
             level: "Warn".into(),
             message: format!("Paused {} {} at \"{}\"", request.method, url, rule.name),
@@ -818,22 +1083,29 @@ where
     }
 
     if !aborted && mock_name.is_none() {
-        // 3) Forward to the real server, then answer the client.
-        let resp = match forward_request(&request, &scheme, &host, port, &url).await {
-            Ok(r) => r,
-            Err(e) => {
-                let body = format!("{{\"error\":\"Proxzy could not reach the server\",\"detail\":\"{}\"}}", escape_json(&e));
-                let resp = make_response(
-                    502,
-                    "Bad Gateway",
-                    vec![("content-type".into(), "application/json".into())],
-                    body.into_bytes(),
-                );
-                let _ = ctx.tx.send(ProxyEvent::Log {
-                    level: "Error".into(),
-                    message: format!("{} {} failed: {}", request.method, url, e),
-                });
-                resp
+        // 3) Forward to the real server, then answer the client. The practice
+        // host is answered by the proxy itself, after Map Local and Breakpoints
+        // have had their turn, so the learning demo exercises the real path.
+        let is_practice = host.eq_ignore_ascii_case(PRACTICE_HOST);
+        let resp = if is_practice {
+            practice_response(&request, &url).await
+        } else {
+            match forward_request(&request, &scheme, &host, port, &url, peer, &ctx.binding).await {
+                Ok(r) => r,
+                Err(e) => {
+                    let body = format!("{{\"error\":\"Proxzy could not reach the server\",\"detail\":\"{}\"}}", escape_json(&e));
+                    let resp = make_response(
+                        502,
+                        "Bad Gateway",
+                        vec![("content-type".into(), "application/json".into())],
+                        body.into_bytes(),
+                    );
+                    let _ = ctx.tx.send(ProxyEvent::Log {
+                        level: "Error".into(),
+                        message: format!("{} {} failed: {}", request.method, url, e),
+                    });
+                    resp
+                }
             }
         };
         write_response(client, &resp, request.method == "HEAD").await?;
@@ -882,7 +1154,7 @@ where
         let additive_changes_count = drift_report.added_in_live.len();
         let mut was_auto_recorded = false;
 
-        if resp.status >= 200 && resp.status < 300 {
+        if !is_practice && resp.status >= 200 && resp.status < 300 {
             if let Ok(mut cfg) = ctx.config.write() {
                 let req_path = url.split("://").nth(1).and_then(|s| s.find('/')).map(|idx| &url[idx..]).unwrap_or("/");
                 let should_auto_record = cfg.auto_record
@@ -945,7 +1217,7 @@ where
                         cfg.map_rules.push(rule);
                         cfg.map_enabled = true;
                         was_auto_recorded = true;
-                        let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
+                        let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(Box::new(cfg.clone())));
                         let _ = ctx.tx.send(ProxyEvent::Log {
                             level: "Info".into(),
                             message: format!("Auto-recorded live 200 OK mock for {}", url),
@@ -1048,7 +1320,7 @@ fn matching_map_rule(ctx: &ConnCtx, req: &HttpRequest, url: &str) -> Option<MapR
         .find(|r| r.enabled && r.matches(&req.method, url, &body))?;
     matched.hits += 1;
     let out = matched.clone();
-    let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
+    let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(Box::new(cfg.clone())));
     Some(out)
 }
 
@@ -1185,6 +1457,287 @@ fn json_str_array(json: &str, key: &str) -> Vec<String> {
     out
 }
 
+/// Where a request that arrives at the proxy port should go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceRoute {
+    /// Local JSON API used by agents and test runners (`/__proxzy/*`).
+    ControlPlane,
+    /// Read-only certificate and onboarding pages for phones.
+    Portal,
+    /// Everything else is normal proxied traffic.
+    ProxyForward,
+}
+
+fn origin_path_or_target(target: &str) -> String {
+    if target.starts_with("http://") || target.starts_with("https://") {
+        origin_path(target)
+    } else {
+        target.to_string()
+    }
+}
+
+fn host_without_port(host: &str) -> &str {
+    if let Some(rest) = host.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            return &rest[..end];
+        }
+    }
+    if let Some((name, port)) = host.rsplit_once(':') {
+        if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
+            return name;
+        }
+    }
+    host
+}
+
+fn is_local_host(host: &str, binding: &ListenerBinding) -> bool {
+    let name = host_without_port(host).to_ascii_lowercase();
+    if name == "localhost" || name == "proxzy.local" || name == "127.0.0.1" || name == "::1" {
+        return true;
+    }
+    if name == binding.bind_ip.to_string().to_ascii_lowercase() {
+        return true;
+    }
+    match binding.policy.advertised_ip() {
+        Some(ip) => name == ip.to_ascii_lowercase(),
+        None => false,
+    }
+}
+
+/// Classify a request without touching the network.
+///
+/// The control plane and the certificate portal are only reachable over a
+/// direct, unencrypted connection to a local host. Traffic that was decrypted
+/// from a CONNECT tunnel (`is_tls`) is always forwarded, so a site under test
+/// cannot smuggle `/__proxzy/*` into the local engine.
+pub fn classify_service_request(
+    target: &str,
+    host: &str,
+    _port: u16,
+    is_tls: bool,
+    binding: &ListenerBinding,
+) -> ServiceRoute {
+    if is_tls {
+        return ServiceRoute::ProxyForward;
+    }
+    let path = origin_path_or_target(target);
+    let path_only = path.split('?').next().unwrap_or(&path);
+    let absolute = target.starts_with("http://") || target.starts_with("https://");
+    let local_host = is_local_host(host, binding);
+    let via_portal_host = local_host || host_without_port(host).eq_ignore_ascii_case("proxzy.local");
+
+    if path_only.starts_with("/__proxzy") && (!absolute || via_portal_host) {
+        return ServiceRoute::ControlPlane;
+    }
+    if via_portal_host
+        && matches!(
+            path_only,
+            "/" | "/ca.cer" | "/ca.pem" | "/ssl" | "/proxzy.local"
+        )
+    {
+        return ServiceRoute::Portal;
+    }
+    ServiceRoute::ProxyForward
+}
+
+fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str())
+}
+
+fn canonical_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(v6),
+        },
+        other => other,
+    }
+}
+
+/// Control plane authorisation: exact local Host, no browser Origin, and either
+/// a loopback peer or a matching control token. Applied to GET and POST alike.
+pub fn authorize_control(
+    peer: SocketAddr,
+    headers: &[(String, String)],
+    binding: &ListenerBinding,
+) -> Result<(), &'static str> {
+    if header(headers, "origin").is_some() {
+        return Err("browser origin is not allowed on the control plane");
+    }
+    let Some(host) = header(headers, "host") else {
+        return Err("missing Host header");
+    };
+    if !is_local_host(host, binding) {
+        return Err("Host does not match the local proxy");
+    }
+    if canonical_ip(peer.ip()).is_loopback() {
+        return Ok(());
+    }
+    let supplied = header(headers, "x-proxzy-control").or_else(|| {
+        header(headers, "authorization").and_then(|value| {
+            value
+                .strip_prefix("Bearer ")
+                .or_else(|| value.strip_prefix("bearer "))
+        })
+    });
+    match (supplied, binding.policy.control_token()) {
+        (Some(given), Some(expected)) if constant_time_eq(given, expected) => Ok(()),
+        (Some(_), Some(_)) => Err("control token is incorrect"),
+        _ => Err("a control token is required for LAN callers"),
+    }
+}
+
+fn control_denied(reason: &str) -> HttpResponse {
+    let body = format!(
+        "{{\"ok\":false,\"error\":\"Forbidden: {}\"}}",
+        escape_json(reason)
+    );
+    make_response(
+        403,
+        "Forbidden",
+        vec![
+            ("content-type".into(), "application/json".into()),
+            ("cache-control".into(), "no-store".into()),
+            ("x-content-type-options".into(), "nosniff".into()),
+        ],
+        body.into_bytes(),
+    )
+}
+
+fn handle_portal(req: &HttpRequest, path: &str, ctx: &ConnCtx) -> HttpResponse {
+    let path_only = path.split('?').next().unwrap_or(path);
+    let ca = &ctx.ca.info;
+    let mut headers = vec![
+        ("cache-control".to_string(), "no-store".to_string()),
+        ("x-content-type-options".to_string(), "nosniff".to_string()),
+        ("connection".to_string(), "close".to_string()),
+    ];
+    if req.method != "GET" && req.method != "HEAD" {
+        return make_response(
+            405,
+            "Method Not Allowed",
+            headers,
+            br#"{"ok":false,"error":"The onboarding portal is read-only"}"#.to_vec(),
+        );
+    }
+    match path_only {
+        "/ca.cer" => {
+            let der = std::fs::read(&ca.cer_path).unwrap_or_default();
+            headers.push((
+                "content-type".to_string(),
+                "application/x-x509-ca-cert".to_string(),
+            ));
+            headers.push((
+                "content-disposition".to_string(),
+                "attachment; filename=\"proxzy-ca.cer\"".to_string(),
+            ));
+            make_response(200, "OK", headers, der)
+        }
+        "/ca.pem" => {
+            let pem = std::fs::read(&ca.pem_path).unwrap_or_default();
+            headers.push(("content-type".to_string(), "application/x-pem-file".to_string()));
+            headers.push((
+                "content-disposition".to_string(),
+                "attachment; filename=\"proxzy-ca.pem\"".to_string(),
+            ));
+            make_response(200, "OK", headers, pem)
+        }
+        _ => {
+            let host = ctx.binding.display_address();
+            let token_hint = if ctx.binding.policy.is_lan() {
+                "LAN mode is on. Keep this page on a trusted Wi-Fi network."
+            } else {
+                "This proxy is local only. Turn on LAN access in Proxzy to reach it from a phone."
+            };
+            let html = format!(
+                "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Proxzy certificate</title><style>body{{font-family:-apple-system,system-ui,sans-serif;background:#0f1115;color:#e8edf5;margin:0;padding:32px}}main{{max-width:620px;margin:auto}}h1{{font-size:24px}}a{{color:#6ea8ff}}code{{background:#1a1f27;padding:2px 6px;border-radius:4px}}.card{{background:#161b22;border:1px solid #2a313c;border-radius:12px;padding:20px;margin:18px 0}}</style></head><body><main><h1>Proxzy local certificate</h1><p>Install this certificate only on devices you own. It lets Proxzy read HTTPS traffic from the apps you are testing.</p><div class=\"card\"><p><strong>iPhone / iPad</strong><br>Open <a href=\"/ca.cer\">/ca.cer</a>, allow the profile, then trust it in Settings &rsaquo; General &rsaquo; About &rsaquo; Certificate Trust Settings.</p><p><strong>Android</strong><br>Download <a href=\"/ca.cer\">/ca.cer</a>, then install it under Security &rsaquo; Encryption &amp; credentials &rsaquo; Install a certificate &rsaquo; CA certificate.</p><p><strong>Command line</strong><br><a href=\"/ca.pem\">/ca.pem</a></p></div><div class=\"card\"><p>Proxy address: <code>{}</code></p><p>{}</p><p>SHA-256: <code>{}</code></p></div></main></body></html>",
+                host, token_hint, ca.fingerprint
+            );
+            headers.push(("content-type".to_string(), "text/html; charset=utf-8".to_string()));
+            make_response(200, "OK", headers, html.into_bytes())
+        }
+    }
+}
+
+/// Resolve a host once and return only an address that is safe to connect to.
+///
+/// This blocks the proxy from being used as a bounce into its own listener, into
+/// loopback from a LAN caller, or into link-local/unspecified addresses, while
+/// still allowing a developer on the same Mac to reach a local test server.
+pub async fn resolve_upstream(
+    host: &str,
+    port: u16,
+    peer: SocketAddr,
+    binding: &ListenerBinding,
+) -> Result<SocketAddr, String> {
+    let mut addresses = Vec::new();
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        addresses.push(SocketAddr::new(ip, port));
+    } else {
+        let resolved = tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::net::lookup_host((host, port)),
+        )
+        .await
+        .map_err(|_| format!("DNS lookup for {} timed out", host))?
+        .map_err(|e| format!("DNS lookup for {}: {}", host, e))?;
+        addresses.extend(resolved);
+    }
+    for addr in addresses {
+        if !is_blocked_destination(addr, peer, binding) {
+            return Ok(addr);
+        }
+    }
+    Err(format!(
+        "Blocked upstream destination {}:{} (loopback, link-local or the proxy itself)",
+        host, port
+    ))
+}
+
+fn is_blocked_destination(addr: SocketAddr, peer: SocketAddr, binding: &ListenerBinding) -> bool {
+    let ip = canonical_ip(addr.ip());
+    let peer_loopback = canonical_ip(peer.ip()).is_loopback();
+    if ip.is_unspecified() {
+        return true;
+    }
+    match ip {
+        IpAddr::V4(v4) => {
+            if v4.is_link_local() {
+                return true;
+            }
+            if v4.is_loopback() && !peer_loopback {
+                return true;
+            }
+        }
+        IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            if (first & 0xffc0) == 0xfe80 {
+                return true;
+            }
+            if v6.is_loopback() && !peer_loopback {
+                return true;
+            }
+        }
+    }
+    // Never let the proxy connect back into its own listener.
+    if addr.port() == binding.port {
+        let advertised = binding
+            .policy
+            .advertised_ip()
+            .and_then(|value| value.parse::<IpAddr>().ok());
+        if ip.is_loopback()
+            || ip == canonical_ip(binding.bind_ip)
+            || advertised.map(|a| canonical_ip(a) == ip).unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Handle Testful / WireMock-like HTTP control requests sent to `/__proxzy/*`.
 /// Allows MobileWright, `mobile-mcp`, XCTest, Espresso, or `curl` to inspect proxy state,
 /// dynamically inject or switch mock scenarios (`success` / `error` / `empty` / `passthrough`),
@@ -1194,32 +1747,12 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
     let body_text = String::from_utf8_lossy(&req.body).to_string();
     let headers = vec![
         ("content-type".to_string(), "application/json".to_string()),
-        ("access-control-allow-origin".to_string(), "*".to_string()),
-        ("access-control-allow-headers".to_string(), "content-type, x-proxzy-control".to_string()),
+        ("cache-control".to_string(), "no-store".to_string()),
+        ("x-content-type-options".to_string(), "nosniff".to_string()),
     ];
 
     if req.method == "OPTIONS" {
         return make_response(204, "No Content", headers, Vec::new());
-    }
-
-    // Security Guard: Restrict control mutating actions to loopback callers
-    let host_hdr = req.headers.iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("host"))
-        .map(|(_, v)| v.as_str())
-        .unwrap_or("");
-    let is_loopback = host_hdr.is_empty() 
-        || host_hdr.starts_with("127.0.0.1") 
-        || host_hdr.starts_with("localhost");
-    let has_control_token = req.headers.iter()
-        .any(|(k, _)| k.eq_ignore_ascii_case("x-proxzy-control"));
-
-    if req.method == "POST" && (!is_loopback && !has_control_token) {
-        return make_response(
-            403,
-            "Forbidden",
-            headers,
-            br#"{"ok":false,"error":"Forbidden: Proxzy control plane restricted to loopback callers"}"#.to_vec(),
-        );
     }
 
     if req.method == "GET" && (path == "/__proxzy/health" || path == "/__proxzy/status" || path == "/__proxzy") {
@@ -1284,7 +1817,7 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                     }
                 }
             }
-            let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
+            let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(Box::new(cfg.clone())));
         }
         return make_response(200, "OK", headers, br#"{"ok":true,"auto_record_updated":true}"#.to_vec());
     }
@@ -1313,7 +1846,7 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                 domains,
                 paths,
             ));
-            let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
+            let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(Box::new(cfg.clone())));
             let _ = ctx.tx.send(ProxyEvent::Log {
                 level: "Info".into(),
                 message: format!(
@@ -1437,7 +1970,7 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                     sess.additive_drifts,
                     calls_json
                 );
-                let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
+                let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(Box::new(cfg.clone())));
                 let _ = ctx.tx.send(ProxyEvent::Log {
                     level: "Info".into(),
                     message: format!("Ended Test Session \"{}\" ({} calls recorded)", sess.name, sess.total_calls),
@@ -1477,7 +2010,7 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                 }
             }
             if updated > 0 {
-                let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
+                let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(Box::new(cfg.clone())));
                 let _ = ctx.tx.send(ProxyEvent::Log {
                     level: "Info".into(),
                     message: format!("Control Hook injected {} properties into {} rules", inject_map.len(), updated),
@@ -1606,7 +2139,7 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                 cfg.map_rules.insert(0, rule);
                 (next_id, fix_p)
             };
-            let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
+            let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(Box::new(cfg.clone())));
             let _ = ctx.tx.send(ProxyEvent::Log {
                 level: "Info".into(),
                 message: format!(
@@ -1678,7 +2211,7 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                 cfg.map_enabled = true;
             }
             if found {
-                let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
+                let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(Box::new(cfg.clone())));
                 let _ = ctx.tx.send(ProxyEvent::Log {
                     level: "Info".into(),
                     message: format!(
@@ -1714,7 +2247,7 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
             for r in &mut cfg.map_rules {
                 r.hits = 0;
             }
-            let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(cfg.clone()));
+            let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(Box::new(cfg.clone())));
             let _ = ctx.tx.send(ProxyEvent::Log {
                 level: "Info".into(),
                 message: "Control Hook reset all mock hit counters".into(),
@@ -1851,12 +2384,107 @@ fn client_config() -> Arc<ClientConfig> {
     Arc::new(cfg)
 }
 
+/// A tiny local API used by the in-app practice session. Five paths that look
+/// like a real mobile backend: a GraphQL query, a REST catalogue, an
+/// unauthorised order, a checkout and a recommendations feed.
+///
+/// This answers only `practice.proxzy.gateway` and only after the Breakpoint
+/// and Map Local stages, so the person watches the real dispatch order instead
+/// of a pre-baked list of rows. The small sleeps keep the timing column honest.
+async fn practice_response(req: &HttpRequest, url: &str) -> HttpResponse {
+    let path = origin_path(url);
+    let path_only = path.split('?').next().unwrap_or(&path);
+    let (status, reason_text, delay_ms, body) = match (req.method.to_uppercase().as_str(), path_only) {
+        ("POST", "/demo/graphql") => (
+            200,
+            "OK",
+            36,
+            r#"{
+  "data": {
+    "products": [
+      { "id": "prod_101", "name": "Runner shoes", "price": 1290.00, "currency": "THB", "inStock": true },
+      { "id": "prod_102", "name": "Everyday tote", "price": 690.00, "currency": "THB", "inStock": true },
+      { "id": "prod_103", "name": "Trail cap", "price": 450.00, "currency": "THB", "inStock": false }
+    ]
+  }
+}"#,
+        ),
+        ("GET", "/demo/products") => (
+            200,
+            "OK",
+            24,
+            r#"{
+  "source": "practice-upstream",
+  "collection": "running",
+  "limit": 20,
+  "products": [
+    { "id": "prod_101", "name": "Runner shoes", "price": 1290.00, "currency": "THB" },
+    { "id": "prod_102", "name": "Everyday tote", "price": 690.00, "currency": "THB" },
+    { "id": "prod_103", "name": "Trail cap", "price": 450.00, "currency": "THB" }
+  ]
+}"#,
+        ),
+        ("GET", "/demo/orders/8421") => (
+            401,
+            "Unauthorized",
+            18,
+            r#"{
+  "error": "unauthorized",
+  "message": "This order belongs to another account.",
+  "code": "ORDER_401"
+}"#,
+        ),
+        ("POST", "/demo/checkout") => (
+            200,
+            "OK",
+            52,
+            r#"{
+  "order": "ord_7712",
+  "status": "confirmed",
+  "totalQuantity": 3,
+  "total": 2190.00,
+  "currency": "THB"
+}"#,
+        ),
+        ("GET", "/demo/recommendations") => (
+            200,
+            "OK",
+            29,
+            r#"{
+  "userId": "u_8841",
+  "items": [
+    { "sku": "TEE-01", "reason": "bought together" },
+    { "sku": "MUG-04", "reason": "popular in your area" }
+  ]
+}"#,
+        ),
+        _ => (
+            200,
+            "OK",
+            12,
+            r#"{"ok":true,"note":"Practice endpoint. Use /demo/graphql, /demo/products, /demo/orders/8421, /demo/checkout or /demo/recommendations."}"#,
+        ),
+    };
+    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+    let headers = vec![
+        (
+            "content-type".to_string(),
+            "application/json; charset=utf-8".to_string(),
+        ),
+        ("x-proxzy-practice".to_string(), "local-api".to_string()),
+        ("cache-control".to_string(), "no-store".to_string()),
+    ];
+    make_response(status, reason_text, headers, body.as_bytes().to_vec())
+}
+
 async fn forward_request(
     req: &HttpRequest,
     scheme: &str,
     host: &str,
     port: u16,
     url: &str,
+    peer: SocketAddr,
+    binding: &ListenerBinding,
 ) -> Result<HttpResponse, String> {
     let path = origin_path(url);
     let mut out = Vec::new();
@@ -1897,7 +2525,8 @@ async fn forward_request(
     out.extend_from_slice(&req.body);
 
     let addr = format!("{}:{}", host, port);
-    let tcp = tokio::time::timeout(Duration::from_secs(20), TcpStream::connect(&addr))
+    let upstream_addr = resolve_upstream(host, port, peer, binding).await?;
+    let tcp = tokio::time::timeout(Duration::from_secs(20), TcpStream::connect(upstream_addr))
         .await
         .map_err(|_| format!("connect to {} timed out", addr))?
         .map_err(|e| format!("connect to {}: {}", addr, e))?;
@@ -2020,7 +2649,11 @@ async fn read_head<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Option<Ve
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
     loop {
-        let n = r.read(&mut tmp).await?;
+        let n = tokio::time::timeout(HEAD_TIMEOUT, r.read(&mut tmp))
+            .await
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "request headers timed out")
+            })??;
         if n == 0 {
             return Ok(if buf.is_empty() { None } else { Some(buf) });
         }
@@ -2284,7 +2917,8 @@ fn absolute_target(
                     None
                 }
             })
-            .unwrap_or_else(|| "127.0.0.1".to_string());
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| "Bad request: missing Host header".to_string())?;
         let (host, port) = split_host_port(&host_header, 80);
         let url = build_url("http", &host, port, target);
         Ok(("http".to_string(), host, port, url))
@@ -2294,9 +2928,7 @@ fn absolute_target(
 fn parse_absolute(url: &str) -> Option<(String, String, u16, String)> {
     let (scheme, rest) = url.split_once("://")?;
     let scheme = scheme.to_ascii_lowercase();
-    let authority_end = rest
-        .find(|c| c == '/' || c == '?' || c == '#')
-        .unwrap_or(rest.len());
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..authority_end];
     let path = if authority_end < rest.len() {
         let p = &rest[authority_end..];
@@ -2330,6 +2962,19 @@ fn origin_path(url: &str) -> String {
         return "/".to_string();
     }
     url.to_string()
+}
+
+/// Read a plain query value from an absolute URL. The capture check only puts
+/// digits in `nonce`, so no percent-decoding is needed here.
+fn query_value(url: &str, key: &str) -> Option<String> {
+    let query = url.split_once('?')?.1.split('#').next().unwrap_or("");
+    for pair in query.split('&') {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        if k == key {
+            return Some(v.to_string());
+        }
+    }
+    None
 }
 
 fn host_header(host: &str, port: u16, scheme: &str) -> String {
@@ -2403,8 +3048,39 @@ mod proxy_tests {
     fn disabled_ssl_proxying_passes_everything() {
         let mut cfg = ProxyConfig::default();
         cfg.ssl_proxying_enabled = false;
+        cfg.intercept_all = true;
         cfg.ssl_allowlist = vec!["*".into()];
         assert!(!cfg.should_intercept("anything.com"));
+    }
+
+    #[test]
+    fn full_catch_switch_decrypts_every_host_when_on() {
+        let mut cfg = ProxyConfig::default();
+        cfg.intercept_all = true;
+        assert!(cfg.should_intercept("api.example.com"));
+        assert!(cfg.should_intercept("127.0.0.1:3000"));
+        cfg.intercept_all = false;
+        assert!(!cfg.should_intercept("api.example.com"));
+    }
+
+    #[test]
+    fn star_in_allowlist_means_full_catch() {
+        let mut cfg = ProxyConfig::default();
+        cfg.ssl_allowlist = vec!["*".into()];
+        assert!(cfg.should_intercept("api.example.com"));
+        assert!(cfg.should_intercept("auth.example.com:8443"));
+    }
+
+    #[test]
+    fn capture_check_nonce_is_read_from_the_query() {
+        assert_eq!(
+            query_value("http://proxzy.gateway/__proxzy/check?nonce=123&x=1", "nonce").as_deref(),
+            Some("123")
+        );
+        assert_eq!(
+            query_value("http://proxzy.gateway/__proxzy/check", "nonce"),
+            None
+        );
     }
 
     #[test]
@@ -2458,6 +3134,11 @@ mod proxy_tests {
             tx,
             ca,
             shutdown: Arc::new(AtomicBool::new(false)),
+            binding: Arc::new(ListenerBinding {
+                bind_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 9090,
+                policy: BindPolicy::LoopbackOnly,
+            }),
         };
 
         // 1) Upsert mock via POST /__proxzy/mock
@@ -2538,15 +3219,19 @@ mod proxy_tests {
             assert_eq!(cfg.map_rules[0].status, 200);
         }
 
-        // 6) Test Security Guard: non-loopback host rejected with 403
+        // 6) Test Security Guard: a spoofed Host is rejected before the handler
         let evil_req = HttpRequest {
             method: "POST".into(),
             target: "/__proxzy/mock".into(),
             headers: vec![("host".into(), "evil.com".into())],
             body: br#"{"pattern":"https://api.shopwave.dev/v1/orders*","scenario":"error"}"#.to_vec(),
         };
-        let evil_resp = handle_proxzy_control(&evil_req, "/__proxzy/mock", &ctx);
-        assert_eq!(evil_resp.status, 403);
+        assert!(authorize_control(
+            SocketAddr::from(([127, 0, 0, 1], 50000)),
+            &evil_req.headers,
+            &ctx.binding
+        )
+        .is_err());
 
         // 7) Test Auto-Catch Record Config via POST /__proxzy/record
         let rec_req = HttpRequest {
@@ -2616,5 +3301,249 @@ mod proxy_tests {
             let cfg = ctx.config.read().unwrap();
             assert!(cfg.active_session.is_none());
         }
+    }
+
+    fn lan_binding(token: &str) -> ListenerBinding {
+        ListenerBinding {
+            bind_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            port: 9090,
+            policy: BindPolicy::Lan {
+                advertised_ip: "192.168.1.20".into(),
+                control_token: token.into(),
+            },
+        }
+    }
+
+    #[test]
+    fn control_plane_requires_local_host_and_no_origin() {
+        let binding = lan_binding("proxzy_secret");
+        let peer = SocketAddr::from(([192, 168, 1, 50], 50000));
+        let good = vec![("host".into(), "192.168.1.20:9090".into())];
+        assert!(authorize_control(peer, &good, &binding).is_err());
+
+        let with_token = vec![
+            ("host".into(), "192.168.1.20:9090".into()),
+            ("x-proxzy-control".into(), "proxzy_secret".into()),
+        ];
+        assert!(authorize_control(peer, &with_token, &binding).is_ok());
+
+        let with_origin = vec![
+            ("host".into(), "192.168.1.20:9090".into()),
+            ("origin".into(), "https://evil.example".into()),
+            ("x-proxzy-control".into(), "proxzy_secret".into()),
+        ];
+        assert!(authorize_control(peer, &with_origin, &binding).is_err());
+
+        let spoofed = vec![("host".into(), "localhost.attacker.com".into())];
+        assert!(authorize_control(peer, &spoofed, &binding).is_err());
+
+        let loopback = SocketAddr::from(([127, 0, 0, 1], 50000));
+        assert!(authorize_control(loopback, &good, &binding).is_ok());
+    }
+
+    #[test]
+    fn control_plane_never_answers_inside_a_tls_tunnel() {
+        let binding = ListenerBinding {
+            bind_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            port: 9090,
+            policy: BindPolicy::LoopbackOnly,
+        };
+        assert_eq!(
+            classify_service_request(
+                "/__proxzy/health",
+                "example.com",
+                443,
+                true,
+                &binding
+            ),
+            ServiceRoute::ProxyForward
+        );
+        assert_eq!(
+            classify_service_request(
+                "/__proxzy/health",
+                "127.0.0.1",
+                9090,
+                false,
+                &binding
+            ),
+            ServiceRoute::ControlPlane
+        );
+        assert_eq!(
+            classify_service_request(
+                "/ca.cer",
+                "127.0.0.1",
+                9090,
+                false,
+                &binding
+            ),
+            ServiceRoute::Portal
+        );
+        assert_eq!(
+            classify_service_request(
+                "http://example.com/",
+                "example.com",
+                80,
+                false,
+                &binding
+            ),
+            ServiceRoute::ProxyForward
+        );
+    }
+
+    #[tokio::test]
+    async fn ssrf_guard_blocks_loopback_bounce_from_lan_and_self_listener() {
+        let binding = lan_binding("proxzy_secret");
+        let lan_peer = SocketAddr::from(([192, 168, 1, 50], 50000));
+        let local_peer = SocketAddr::from(([127, 0, 0, 1], 50000));
+        assert!(resolve_upstream("127.0.0.1", 3000, lan_peer, &binding)
+            .await
+            .is_err());
+        assert!(resolve_upstream("127.0.0.1", 3000, local_peer, &binding)
+            .await
+            .is_ok());
+        assert!(resolve_upstream("192.168.1.20", 9090, lan_peer, &binding)
+            .await
+            .is_err());
+        assert!(resolve_upstream("169.254.169.254", 80, local_peer, &binding)
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn absolute_target_rejects_missing_host_header() {
+        assert!(absolute_target("/__proxzy/health", b"GET /__proxzy/health HTTP/1.1\r\n\r\n").is_err());
+        assert!(absolute_target("/ca.cer", b"GET /ca.cer HTTP/1.1\r\nHost:   \r\n\r\n").is_err());
+        let ok = absolute_target("/ca.cer", b"GET /ca.cer HTTP/1.1\r\nHost: 127.0.0.1:9090\r\n\r\n").unwrap();
+        assert_eq!(ok.1, "127.0.0.1");
+        assert_eq!(ok.2, 9090);
+    }
+
+    #[tokio::test]
+    async fn live_portal_and_control_security_over_tcp_socket() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "proxzy-live-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pem_path = temp_dir.join("proxzy-ca.pem");
+        let cer_path = temp_dir.join("proxzy-ca.cer");
+
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "Proxzy Local CA Test");
+        params.key_usages = vec![
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::CrlSign,
+            KeyUsagePurpose::DigitalSignature,
+        ];
+        let cert = params.self_signed(&key).unwrap();
+        let cert_pem = cert.pem();
+        let der = cert.der().to_vec();
+        std::fs::write(&pem_path, &cert_pem).unwrap();
+        std::fs::write(&cer_path, &der).unwrap();
+
+        let ca = Arc::new(Ca {
+            key,
+            cert,
+            cert_pem,
+            info: CaInfo {
+                dir: temp_dir.clone(),
+                pem_path,
+                cer_path,
+                fingerprint: "TEST:CA:FP".into(),
+            },
+        });
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let binding = Arc::new(ListenerBinding {
+            bind_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            port: addr.port(),
+            policy: BindPolicy::Lan {
+                advertised_ip: "127.0.0.1".into(),
+                control_token: "proxzy_live_test_token".into(),
+            },
+        });
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let ctx = ConnCtx {
+            config: Arc::new(RwLock::new(ProxyConfig::default())),
+            decisions: Arc::new(Mutex::new(HashMap::new())),
+            paused: Arc::new(Mutex::new(Vec::new())),
+            notify: Arc::new(Notify::new()),
+            tx,
+            ca,
+            shutdown: Arc::new(AtomicBool::new(false)),
+            binding,
+        };
+
+        let send = |raw: String| async move {
+            let mut client = TcpStream::connect(addr).await.unwrap();
+            client.write_all(raw.as_bytes()).await.unwrap();
+            let mut buf = Vec::new();
+            client.read_to_end(&mut buf).await.unwrap();
+            buf
+        };
+
+        let srv = tokio::spawn(async move {
+            for _ in 0..4 {
+                let (sock, peer) = listener.accept().await.unwrap();
+                let c = ctx.clone();
+                tokio::spawn(async move {
+                    let _ = handle_connection(sock, peer, c).await;
+                });
+            }
+        });
+
+        // 1. Portal /ca.cer returns DER certificate with no-store & nosniff
+        let cer_bytes = send(format!(
+            "GET /ca.cer HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            addr.port()
+        ))
+        .await;
+        let cer_str = String::from_utf8_lossy(&cer_bytes);
+        assert!(cer_str.starts_with("HTTP/1.1 200 OK"));
+        assert!(cer_str.contains("content-type: application/x-x509-ca-cert"));
+        assert!(cer_str.contains("cache-control: no-store"));
+        assert!(cer_str.contains("x-content-type-options: nosniff"));
+
+        // 2. Proxy-form request to http://proxzy.local/ serves read-only HTML portal
+        let portal_bytes = send(
+            "GET http://proxzy.local/ HTTP/1.1\r\nHost: proxzy.local\r\nConnection: close\r\n\r\n"
+                .to_string(),
+        )
+        .await;
+        let portal_str = String::from_utf8_lossy(&portal_bytes);
+        assert!(portal_str.starts_with("HTTP/1.1 200 OK"));
+        assert!(portal_str.contains("/ca.cer"));
+
+        // 3. Browser CORS Origin header on /__proxzy/health is denied with 403
+        let cors_bytes = send(format!(
+            "GET /__proxzy/health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: https://evil.example\r\nConnection: close\r\n\r\n",
+            addr.port()
+        ))
+        .await;
+        let cors_str = String::from_utf8_lossy(&cors_bytes);
+        assert!(cors_str.starts_with("HTTP/1.1 403 Forbidden"));
+
+        // 4. Loopback GET /__proxzy/health without Origin succeeds
+        let health_bytes = send(format!(
+            "GET /__proxzy/health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            addr.port()
+        ))
+        .await;
+        let health_str = String::from_utf8_lossy(&health_bytes);
+        assert!(health_str.starts_with("HTTP/1.1 200 OK"));
+        assert!(health_str.contains("\"engine\":\"ProxzyCraft\""));
+
+        srv.await.unwrap();
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

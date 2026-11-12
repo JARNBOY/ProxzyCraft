@@ -1,15 +1,15 @@
 {
   "id": "unk_47215454465baff4",
-  "revision": 2,
+  "revision": 3,
   "question": "What does the original Proxyman window actually look like at 1440x900 (layout, colours, spacing, fonts)?",
   "severity": "medium",
   "domain": "visual",
-  "status": "investigating",
+  "status": "blocked",
   "probes": [
     "A screenshot of the running app added to reference/",
     "A capture of the traffic list and inspector in a new checks folder"
   ],
   "evidence_for": [],
   "evidence_against": [],
-  "resolution": "Still open; capture/ and reference/ contain no picture of the running original. I rebuilt an original dark, three-part Proxyman-style layout at 1440x900 (left rail, traffic table, right inspector) from the request; colours, spacing and fonts are an estimate, not a pixel match."
+  "resolution": "Blocked by the clean-room rule and missing reference: the attachments show the original's main window, rule table and editor, but not a measured 1440x900 capture with colours, spacing and fonts. The POC is an original dark three-part reinterpretation (left rail, traffic table, right inspector) sized to fit 1440x900; it is not a pixel match, and cannot be verified further without running the original."
 }

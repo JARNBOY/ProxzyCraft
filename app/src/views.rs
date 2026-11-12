@@ -101,7 +101,7 @@ impl App {
         ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                let total = ui.available_width();
+                let total = (ui.available_width() - 16.0).max(600.0);
                 let left = (total * 0.60)
                     .clamp(470.0, 760.0)
                     .min((total - 300.0).max(360.0));
@@ -531,798 +531,6 @@ impl App {
         }
     }
 
-    fn map_local_page(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 1.0;
-                ui.label(RichText::new("Map Local").size(24.0).strong().color(TEXT));
-                ui.label(
-                    RichText::new("Replace a server response with a local fixture. No backend needed.")
-                        .size(11.5)
-                        .color(MUTED),
-                );
-            });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                pill(
-                    ui,
-                    "ENGINE ON",
-                    GREEN,
-                    Color32::from_rgba_unmultiplied(61, 214, 149, 18),
-                );
-                ui.label(
-                    RichText::new("rules apply to sends and replays")
-                        .size(9.5)
-                        .color(FAINT),
-                );
-            });
-        });
-        ui.add_space(12.0);
-
-        let enabled = self.map_rules.iter().filter(|r| r.enabled).count();
-        let hits: u32 = self.map_rules.iter().map(|r| r.hits).sum();
-        let w = (ui.available_width() - 36.0) / 4.0;
-        ui.horizontal(|ui| {
-            kpi_card(
-                ui,
-                w,
-                "RULES",
-                &self.map_rules.len().to_string(),
-                "local mappings",
-                ACCENT,
-            );
-            kpi_card(ui, w, "ENABLED", &enabled.to_string(), "currently matching", GREEN);
-            kpi_card(ui, w, "HITS", &hits.to_string(), "served from local", AMBER);
-            kpi_card(ui, w, "ENGINE", "ON", "JSON responses", CYAN);
-        });
-        ui.add_space(12.0);
-
-        ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let total = ui.available_width();
-                let left = (total * 0.63).clamp(500.0, 780.0);
-                let right = (total - left - 16.0).max(300.0);
-                ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(left, 620.0),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            ui.set_width(left);
-                            ui.horizontal(|ui| {
-                                section_label(ui, "Mappings");
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    ui.label(
-                                        RichText::new("first match wins")
-                                            .size(9.5)
-                                            .color(FAINT),
-                                    );
-                                });
-                            });
-                            ui.add_space(5.0);
-
-                            let rules = self.map_rules.clone();
-                            let mut remove_id: Option<u64> = None;
-                            let mut test_rule: Option<MapRule> = None;
-                            for rule in &rules {
-                                Frame::none()
-                                    .fill(CARD)
-                                    .stroke(Stroke::new(
-                                        1.0,
-                                        if rule.enabled {
-                                            BORDER
-                                        } else {
-                                            Color32::from_rgb(32, 39, 51)
-                                        },
-                                    ))
-                                    .rounding(10.0)
-                                    .inner_margin(Margin::same(12.0))
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        ui.horizontal(|ui| {
-                                            if toggle(ui, rule.enabled).clicked() {
-                                                if let Some(r) = self
-                                                    .map_rules
-                                                    .iter_mut()
-                                                    .find(|r| r.id == rule.id)
-                                                {
-                                                    r.enabled = !r.enabled;
-                                                }
-                                                self.log(
-                                                    Level::Info,
-                                                    "Map Local",
-                                                    format!(
-                                                        "Rule \"{}\" {}",
-                                                        rule.name,
-                                                        if rule.enabled {
-                                                            "disabled"
-                                                        } else {
-                                                            "enabled"
-                                                        }
-                                                    ),
-                                                );
-                                            }
-                                            ui.vertical(|ui| {
-                                                ui.spacing_mut().item_spacing.y = 0.0;
-                                                ui.label(
-                                                    RichText::new(&rule.name)
-                                                        .size(12.5)
-                                                        .strong()
-                                                        .color(if rule.enabled {
-                                                            TEXT
-                                                        } else {
-                                                            MUTED
-                                                        }),
-                                                );
-                                                ui.label(
-                                                    RichText::new(format!(
-                                                        "{} · {} hits",
-                                                        rule.content_type, rule.hits
-                                                    ))
-                                                    .size(9.5)
-                                                    .color(FAINT),
-                                                );
-                                            });
-                                            ui.with_layout(
-                                                Layout::right_to_left(Align::Center),
-                                                |ui| {
-                                                    pill(
-                                                        ui,
-                                                        &rule.status.to_string(),
-                                                        status_color(rule.status),
-                                                        Color32::from_rgba_unmultiplied(
-                                                            status_color(rule.status).r(),
-                                                            status_color(rule.status).g(),
-                                                            status_color(rule.status).b(),
-                                                            18,
-                                                        ),
-                                                    );
-                                                    pill(
-                                                        ui,
-                                                        rule.method.label(),
-                                                        method_color(rule.method.label()),
-                                                        INPUT,
-                                                    );
-                                                },
-                                            );
-                                        });
-                                        ui.add_space(8.0);
-                                        input_frame().show(ui, |ui| {
-                                            ui.set_width(ui.available_width());
-                                            ui.horizontal(|ui| {
-                                                ui.label(
-                                                    RichText::new(&rule.pattern)
-                                                        .font(mono(10.0))
-                                                        .color(Color32::from_rgb(
-                                                            150, 180, 225,
-                                                        )),
-                                                );
-                                                ui.with_layout(
-                                                    Layout::right_to_left(Align::Center),
-                                                    |ui| {
-                                                        ui.label(
-                                                            RichText::new("LOCAL JSON")
-                                                                .size(8.5)
-                                                                .color(AMBER),
-                                                        );
-                                                    },
-                                                );
-                                            });
-                                        });
-                                        ui.add_space(7.0);
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                RichText::new(format!(
-                                                    "{} ms delay",
-                                                    rule.delay_ms
-                                                ))
-                                                .size(9.5)
-                                                .color(FAINT),
-                                            );
-                                            ui.with_layout(
-                                                Layout::right_to_left(Align::Center),
-                                                |ui| {
-                                                    if secondary_button(ui, "Remove").clicked() {
-                                                        remove_id = Some(rule.id);
-                                                    }
-                                                    if secondary_button(ui, "Send test").clicked() {
-                                                        test_rule = Some(rule.clone());
-                                                    }
-                                                },
-                                            );
-                                        });
-                                    });
-                                ui.add_space(7.0);
-                            }
-                            if let Some(id) = remove_id {
-                                self.map_rules.retain(|r| r.id != id);
-                                self.log(Level::Warn, "Map Local", "A mapping was removed");
-                            }
-                            if let Some(rule) = test_rule {
-                                self.test_map_rule(&rule, ctx);
-                            }
-
-                            ui.add_space(6.0);
-                            section_label(ui, "How mapping works");
-                            ui.add_space(5.0);
-                            Frame::none()
-                                .fill(PANEL)
-                                .stroke(Stroke::new(1.0, BORDER))
-                                .rounding(10.0)
-                                .inner_margin(Margin::same(14.0))
-                                .show(ui, |ui| {
-                                    step_row(
-                                        ui,
-                                        1,
-                                        "Match",
-                                        "A method and a URL substring pick the request.",
-                                    );
-                                    step_row(
-                                        ui,
-                                        2,
-                                        "Replace",
-                                        "The fixture body is returned with the chosen status.",
-                                    );
-                                    step_row(
-                                        ui,
-                                        3,
-                                        "Inspect",
-                                        "The capture is marked MOCK and never reaches a server.",
-                                    );
-                                });
-                        },
-                    );
-                    ui.add_space(16.0);
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(right, 620.0),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            ui.set_width(right);
-                            section_label(ui, "New mapping");
-                            ui.add_space(5.0);
-                            card().show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                form_label(ui, "Rule name");
-                                input_frame().show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.add(
-                                        egui::TextEdit::singleline(&mut self.rule_name)
-                                            .frame(false)
-                                            .desired_width(f32::INFINITY)
-                                            .text_color(TEXT),
-                                    );
-                                });
-                                ui.add_space(7.0);
-                                form_label(ui, "URL contains");
-                                input_frame().show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.add(
-                                        egui::TextEdit::singleline(&mut self.rule_pattern)
-                                            .frame(false)
-                                            .desired_width(f32::INFINITY)
-                                            .font(TextStyle::Monospace)
-                                            .text_color(TEXT)
-                                            .hint_text("/v1/products"),
-                                    );
-                                });
-                                ui.add_space(7.0);
-                                ui.horizontal(|ui| {
-                                    ui.vertical(|ui| {
-                                        ui.set_width((ui.available_width() - 8.0) / 2.0);
-                                        form_label(ui, "Method");
-                                        egui::ComboBox::from_id_salt("rule_method")
-                                            .width(ui.available_width())
-                                            .selected_text(rule_method_label(self.rule_method))
-                                            .show_ui(ui, |ui| {
-                                                for m in [
-                                                    RuleMethod::Any,
-                                                    RuleMethod::Get,
-                                                    RuleMethod::Post,
-                                                    RuleMethod::Put,
-                                                    RuleMethod::Delete,
-                                                ] {
-                                                    ui.selectable_value(
-                                                        &mut self.rule_method,
-                                                        m,
-                                                        m.label(),
-                                                    );
-                                                }
-                                            });
-                                    });
-                                    ui.vertical(|ui| {
-                                        ui.set_width((ui.available_width() - 8.0) / 2.0);
-                                        form_label(ui, "Status");
-                                        input_frame().show(ui, |ui| {
-                                            ui.set_width(ui.available_width());
-                                            ui.add(
-                                                egui::TextEdit::singleline(&mut self.rule_status)
-                                                    .frame(false)
-                                                    .desired_width(f32::INFINITY)
-                                                    .font(TextStyle::Monospace)
-                                                    .text_color(TEXT),
-                                            );
-                                        });
-                                    });
-                                });
-                                ui.add_space(7.0);
-                                form_label(ui, "Delay (ms)");
-                                input_frame().show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.add(
-                                        egui::TextEdit::singleline(&mut self.rule_delay)
-                                            .frame(false)
-                                            .desired_width(f32::INFINITY)
-                                            .font(TextStyle::Monospace)
-                                            .text_color(TEXT),
-                                    );
-                                });
-                                ui.add_space(7.0);
-                                form_label(ui, "JSON body");
-                                input_frame().show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.add(
-                                        egui::TextEdit::multiline(&mut self.rule_body)
-                                            .frame(false)
-                                            .desired_rows(8)
-                                            .desired_width(f32::INFINITY)
-                                            .font(TextStyle::Monospace)
-                                            .text_color(TEXT),
-                                    );
-                                });
-                                ui.add_space(10.0);
-                                if primary_button(ui, "Save mapping").clicked() {
-                                    if self.rule_name.trim().is_empty()
-                                        || self.rule_pattern.trim().is_empty()
-                                    {
-                                        let until = ui.input(|i| i.time) + 2.4;
-                                        self.toast = Some(Toast {
-                                            text: "Give the rule a name and a URL pattern".into(),
-                                            until,
-                                        });
-                                    } else {
-                                        let id = self
-                                            .map_rules
-                                            .iter()
-                                            .map(|r| r.id)
-                                            .max()
-                                            .unwrap_or(0)
-                                            + 1;
-                                        let status =
-                                            self.rule_status.trim().parse::<u16>().unwrap_or(200);
-                                        let delay =
-                                            self.rule_delay.trim().parse::<u64>().unwrap_or(0);
-                                        let name = self.rule_name.clone();
-                                        self.map_rules.push(MapRule {
-                                            id,
-                                            name: name.clone(),
-                                            pattern: self.rule_pattern.clone(),
-                                            method: self.rule_method,
-                                            status,
-                                            content_type: "application/json".into(),
-                                            delay_ms: delay,
-                                            body: self.rule_body.clone(),
-                                            graphql_name: String::new(),
-                                            enabled: true,
-                                            hits: 0,
-                                            ..MapRule::default()
-                                        });
-                                        self.log(
-                                            Level::Info,
-                                            "Map Local",
-                                            format!("New mapping created: {}", name),
-                                        );
-                                        let until = ui.input(|i| i.time) + 2.4;
-                                        self.toast = Some(Toast {
-                                            text: format!("Mapping saved: {}", name),
-                                            until,
-                                        });
-                                    }
-                                }
-                            });
-                            ui.add_space(8.0);
-                            Frame::none()
-                                .fill(INPUT)
-                                .stroke(Stroke::new(1.0, BORDER))
-                                .rounding(8.0)
-                                .inner_margin(Margin::same(10.0))
-                                .show(ui, |ui| {
-                                    ui.label(
-                                        RichText::new("Tip: use Send test to capture a sample response without a backend.")
-                                            .size(9.5)
-                                            .color(FAINT),
-                                    );
-                                });
-                        },
-                    );
-                });
-            });
-    }
-
-    fn test_map_rule(&mut self, rule: &MapRule, ctx: &egui::Context) {
-        let method = match rule.method {
-            RuleMethod::Any => "GET",
-            RuleMethod::Get => "GET",
-            RuleMethod::Post => "POST",
-            RuleMethod::Put => "PUT",
-            RuleMethod::Delete => "DELETE",
-        };
-        let url = if rule.pattern.starts_with('/') {
-            format!("https://api.shopwave.dev{}", rule.pattern)
-        } else {
-            format!("https://api.shopwave.dev/{}", rule.pattern)
-        };
-        let mut c = Capture {
-            id: 0,
-            method: method.into(),
-            url,
-            status: rule.status,
-            latency_ms: rule.delay_ms,
-            size_bytes: rule.body.len() as u64,
-            kind: detect_kind(method, &rule.pattern, ""),
-            started: now_stamp(),
-            remote: "map-local".into(),
-            protocol: "Local".into(),
-            req_headers: vec![("accept".into(), "application/json".into())],
-            req_body: String::new(),
-            resp_headers: vec![
-                ("content-type".into(), rule.content_type.clone()),
-                ("x-proxzy-rule".into(), rule.name.clone()),
-            ],
-            resp_body: rule.body.clone(),
-            graphql: None,
-            mock: Some(rule.name.clone()),
-            pinned: false,
-            aborted: false,
-        };
-        c.graphql = graphql_info(method, "");
-        if let Some(r) = self.map_rules.iter_mut().find(|r| r.id == rule.id) {
-            r.hits += 1;
-        }
-        self.add_capture(c);
-        self.view = View::Traffic;
-        self.inspector_tab = InspectorTab::Overview;
-        self.log(
-            Level::Info,
-            "Map Local",
-            format!("Test request captured through \"{}\"", rule.name),
-        );
-        let until = ctx.input(|i| i.time) + 2.6;
-        self.toast = Some(Toast {
-            text: format!("Test captured: {}", rule.name),
-            until,
-        });
-    }
-
-    fn breakpoints_page(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 1.0;
-                ui.label(
-                    RichText::new("Breakpoints")
-                        .size(24.0)
-                        .strong()
-                        .color(TEXT),
-                );
-                ui.label(
-                    RichText::new("Pause a request or response, edit it, then continue.")
-                        .size(11.5)
-                        .color(MUTED),
-                );
-            });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                pill(
-                    ui,
-                    "INTERCEPTOR READY",
-                    AMBER,
-                    Color32::from_rgba_unmultiplied(255, 181, 84, 18),
-                );
-            });
-        });
-        ui.add_space(12.0);
-        let armed = self.breakpoints.iter().filter(|b| b.enabled).count();
-        let w = (ui.available_width() - 36.0) / 4.0;
-        ui.horizontal(|ui| {
-            kpi_card(
-                ui,
-                w,
-                "RULES",
-                &self.breakpoints.len().to_string(),
-                "URL conditions",
-                ACCENT,
-            );
-            kpi_card(ui, w, "ARMED", &armed.to_string(), "waiting to pause", AMBER);
-            kpi_card(ui, w, "PAUSED", "0", "no request held", GREEN);
-            kpi_card(ui, w, "EDITS", "2", "applied this session", PURPLE);
-        });
-        ui.add_space(12.0);
-
-        ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let total = ui.available_width();
-                let left = (total * 0.61).clamp(490.0, 760.0);
-                let right = (total - left - 16.0).max(320.0);
-                ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(left, 560.0),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            ui.set_width(left);
-                            section_label(ui, "Rules");
-                            ui.add_space(5.0);
-                            let rules = self.breakpoints.clone();
-                            let mut pause_rule: Option<BreakpointRule> = None;
-                            for rule in &rules {
-                                Frame::none()
-                                    .fill(CARD)
-                                    .stroke(Stroke::new(1.0, BORDER))
-                                    .rounding(10.0)
-                                    .inner_margin(Margin::same(12.0))
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        ui.horizontal(|ui| {
-                                            if toggle(ui, rule.enabled).clicked() {
-                                                if let Some(r) = self
-                                                    .breakpoints
-                                                    .iter_mut()
-                                                    .find(|r| r.id == rule.id)
-                                                {
-                                                    r.enabled = !r.enabled;
-                                                }
-                                                self.log(
-                                                    Level::Info,
-                                                    "Breakpoints",
-                                                    format!(
-                                                        "Rule \"{}\" {}",
-                                                        rule.name,
-                                                        if rule.enabled {
-                                                            "disarmed"
-                                                        } else {
-                                                            "armed"
-                                                        }
-                                                    ),
-                                                );
-                                            }
-                                            ui.vertical(|ui| {
-                                                ui.spacing_mut().item_spacing.y = 0.0;
-                                                ui.label(
-                                                    RichText::new(&rule.name)
-                                                        .size(12.5)
-                                                        .strong()
-                                                        .color(if rule.enabled {
-                                                            TEXT
-                                                        } else {
-                                                            MUTED
-                                                        }),
-                                                );
-                                                ui.label(
-                                                    RichText::new(format!(
-                                                        "{} · {} pauses",
-                                                        rule.pattern, rule.hits
-                                                    ))
-                                                    .font(mono(9.5))
-                                                    .color(FAINT),
-                                                );
-                                            });
-                                            ui.with_layout(
-                                                Layout::right_to_left(Align::Center),
-                                                |ui| {
-                                                    pill(
-                                                        ui,
-                                                        rule.stage.label(),
-                                                        if rule.stage == BpStage::Request {
-                                                            AMBER
-                                                        } else {
-                                                            PURPLE
-                                                        },
-                                                        INPUT,
-                                                    );
-                                                    if rule.enabled {
-                                                        pill(
-                                                            ui,
-                                                            "ARMED",
-                                                            GREEN,
-                                                            Color32::from_rgba_unmultiplied(
-                                                                61, 214, 149, 16,
-                                                            ),
-                                                        );
-                                                    }
-                                                },
-                                            );
-                                        });
-                                        ui.add_space(8.0);
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                RichText::new(if rule.stage == BpStage::Request {
-                                                    "Pauses before the request leaves the app"
-                                                } else {
-                                                    "Pauses before the response reaches the app"
-                                                })
-                                                .size(9.5)
-                                                .color(FAINT),
-                                            );
-                                            ui.with_layout(
-                                                Layout::right_to_left(Align::Center),
-                                                |ui| {
-                                                    if secondary_button(ui, "Pause now").clicked() {
-                                                        pause_rule = Some(rule.clone());
-                                                    }
-                                                },
-                                            );
-                                        });
-                                    });
-                                ui.add_space(7.0);
-                            }
-                            if let Some(rule) = pause_rule {
-                                self.pause_with_rule(&rule, ctx);
-                            }
-
-                            ui.add_space(6.0);
-                            section_label(ui, "How a pause works");
-                            ui.add_space(5.0);
-                            Frame::none()
-                                .fill(PANEL)
-                                .stroke(Stroke::new(1.0, BORDER))
-                                .rounding(10.0)
-                                .inner_margin(Margin::same(14.0))
-                                .show(ui, |ui| {
-                                    step_row(
-                                        ui,
-                                        1,
-                                        "Arm",
-                                        "A URL pattern decides which request pauses.",
-                                    );
-                                    step_row(
-                                        ui,
-                                        2,
-                                        "Edit",
-                                        "Change the method, headers or JSON body while it waits.",
-                                    );
-                                    step_row(
-                                        ui,
-                                        3,
-                                        "Continue",
-                                        "The edited traffic is recorded in the inspector.",
-                                    );
-                                });
-                        },
-                    );
-                    ui.add_space(16.0);
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(right, 560.0),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            ui.set_width(right);
-                            section_label(ui, "Test bench");
-                            ui.add_space(5.0);
-                            card().show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                if let Some(c) = self.captures.get(self.selected) {
-                                    ui.label(
-                                        RichText::new("SELECTED REQUEST")
-                                            .size(8.5)
-                                            .color(FAINT)
-                                            .strong(),
-                                    );
-                                    ui.add_space(5.0);
-                                    ui.horizontal(|ui| {
-                                        method_badge(ui, &c.method);
-                                        wave_badge(ui, c.status);
-                                    });
-                                    ui.add_space(3.0);
-                                    ui.label(
-                                        RichText::new(c.host_path())
-                                            .font(mono(10.0))
-                                            .color(TEXT),
-                                    );
-                                } else {
-                                    ui.label(
-                                        RichText::new("No request selected")
-                                            .size(11.0)
-                                            .color(MUTED),
-                                    );
-                                }
-                                ui.add_space(10.0);
-                                form_label(ui, "Pause at");
-                                ui.horizontal(|ui| {
-                                    if chip(
-                                        ui,
-                                        "Request",
-                                        self.bp_stage_override == BpStage::Request,
-                                    )
-                                    .clicked()
-                                    {
-                                        self.bp_stage_override = BpStage::Request;
-                                    }
-                                    if chip(
-                                        ui,
-                                        "Response",
-                                        self.bp_stage_override == BpStage::Response,
-                                    )
-                                    .clicked()
-                                    {
-                                        self.bp_stage_override = BpStage::Response;
-                                    }
-                                });
-                                ui.add_space(10.0);
-                                if primary_button(ui, "Pause selected request").clicked() {
-                                    self.trigger_breakpoint(ctx);
-                                }
-                                ui.add_space(6.0);
-                                ui.label(
-                                    RichText::new("Edits stay local. Abort records a cancelled request with a red status.")
-                                        .size(9.5)
-                                        .color(FAINT),
-                                );
-                            });
-                            ui.add_space(10.0);
-                            Frame::none()
-                                .fill(Color32::from_rgba_unmultiplied(255, 181, 84, 10))
-                                .stroke(Stroke::new(
-                                    1.0,
-                                    Color32::from_rgba_unmultiplied(255, 181, 84, 60),
-                                ))
-                                .rounding(9.0)
-                                .inner_margin(Margin::same(11.0))
-                                .show(ui, |ui| {
-                                    ui.label(
-                                        RichText::new("Breakpoint pause is a POC simulation")
-                                            .size(10.5)
-                                            .strong()
-                                            .color(AMBER),
-                                    );
-                                    ui.label(
-                                        RichText::new("Live rules pause the real request at the request stage; the editor then releases it or aborts it.")
-                                            .size(9.5)
-                                            .color(MUTED),
-                                    );
-                                });
-                            ui.add_space(10.0);
-                            section_label(ui, "Recent breakpoint events");
-                            ui.add_space(5.0);
-                            Frame::none()
-                                .fill(PANEL)
-                                .stroke(Stroke::new(1.0, BORDER))
-                                .rounding(9.0)
-                                .inner_margin(Margin::same(11.0))
-                                .show(ui, |ui| {
-                                    let mut shown = 0;
-                                    for log in &self.logs {
-                                        if log.source == "Breakpoints" && shown < 3 {
-                                            shown += 1;
-                                            ui.horizontal(|ui| {
-                                                pill(
-                                                    ui,
-                                                    log.level.label(),
-                                                    log.level.color(),
-                                                    Color32::from_rgba_unmultiplied(
-                                                        log.level.color().r(),
-                                                        log.level.color().g(),
-                                                        log.level.color().b(),
-                                                        16,
-                                                    ),
-                                                );
-                                                ui.label(
-                                                    RichText::new(&log.message)
-                                                        .size(9.5)
-                                                        .color(MUTED),
-                                                );
-                                            });
-                                        }
-                                    }
-                                    if shown == 0 {
-                                        ui.label(
-                                            RichText::new("No breakpoint events yet")
-                                                .size(9.5)
-                                                .color(FAINT),
-                                        );
-                                    }
-                                });
-                        },
-                    );
-                });
-            });
-    }
-
     fn pause_with_rule(&mut self, rule: &BreakpointRule, ctx: &egui::Context) {
         let Some(c) = self.captures.get(self.selected).cloned() else {
             let until = ctx.input(|i| i.time) + 2.4;
@@ -1342,13 +550,13 @@ impl App {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
                 ui.label(
-                    RichText::new("Log Dashboard")
+                    RichText::new("Log Activity")
                         .size(24.0)
                         .strong()
                         .color(TEXT),
                 );
                 ui.label(
-                    RichText::new("Traffic, rule hits and breakpoint events in one timeline.")
+                    RichText::new("Dashboard for traffic, rule hits and breakpoint events.")
                         .size(11.5)
                         .color(MUTED),
                 );
@@ -1683,7 +891,8 @@ impl App {
                 );
                 ui.add_space(9.0);
                 let device_gap = 14.0;
-                let device_col = ((ui.available_width() - device_gap) / 2.0).max(320.0);
+                let device_col =
+                    ((ui.available_width() - device_gap - 16.0) / 2.0).max(320.0);
                 let port = self.proxy_port;
                 let ca_pem = self
                     .ca_info
@@ -1834,6 +1043,62 @@ impl App {
                     });
                 ui.add_space(14.0);
 
+                section_label(ui, "Safe capture: raw tunnels and protected system domains");
+                ui.add_space(6.0);
+                Frame::none()
+                    .fill(CARD)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .rounding(11.0)
+                    .inner_margin(Margin::same(14.0))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            pill(
+                                ui,
+                                "SAFE BY DEFAULT",
+                                GREEN,
+                                Color32::from_rgba_unmultiplied(61, 214, 149, 18),
+                            );
+                            ui.label(
+                                RichText::new("Every TCP connection is listed. Decryption is opt-in, and a few system services are always left alone.")
+                                    .size(10.5)
+                                    .color(MUTED),
+                            );
+                        });
+                        ui.add_space(7.0);
+                        truth_row(
+                            ui,
+                            "RAW TUNNEL",
+                            "An HTTPS app domain that is not in the SSL allowlist is shown as a raw tunnel. Traffic still works and no certificate warning appears; headers and JSON stay encrypted.",
+                            CYAN,
+                        );
+                        truth_row(
+                            ui,
+                            "1-click TLS decryption",
+                            "Select a RAW TUNNEL row in All Traffic and press Enable TLS Decryption, or turn on Full HTTPS catch on Live Capture. The next request from that domain shows headers, JSON, GraphQL and REST payloads.",
+                            ACCENT,
+                        );
+                        truth_row(
+                            ui,
+                            "PROTECTED",
+                            "Apple push, OS update and certificate-check domains (plus Google Play services) always stay raw. This keeps macOS and simulators from losing trust or showing certificate errors.",
+                            GREEN,
+                        );
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if secondary_button(ui, "Show tunnel rows").clicked() {
+                                self.view = View::Traffic;
+                                self.filter = TrafficFilter::Tunnels;
+                            }
+                            ui.label(
+                                RichText::new("The sample session includes one PROTECTED row and one RAW TUNNEL row.")
+                                    .size(9.5)
+                                    .color(FAINT),
+                            );
+                        });
+                    });
+                ui.add_space(14.0);
+
                 section_label(ui, "Automation studio");
                 ui.add_space(6.0);
                 Frame::none()
@@ -1965,7 +1230,7 @@ impl App {
                                 ui,
                                 "Log dashboard",
                                 "One timeline for captures, mock hits, breakpoint edits and system events.",
-                                "Open Log Dashboard; filter by Info, Warn or Error, and copy the session summary.",
+                                "Open Log Activity; filter by Info, Warn or Error, and copy the session summary.",
                                 CYAN,
                             );
                         },
@@ -2022,7 +1287,7 @@ impl App {
                             "Create a Map Local rule for the GraphQL endpoint and compare the mocked capture with a live send.",
                             "Pause a request, change one JSON field, Continue, then open Request to see the edit.",
                             "Send a REST request to a public test API in Composer and inspect the real headers.",
-                            "Filter the traffic list to Errors, then follow the timeline in the Log Dashboard.",
+                            "Filter the traffic list to Errors, then follow the timeline in Log Activity.",
                         ] {
                             ui.horizontal(|ui| {
                                 dot(ui, FAINT, 5.0);
@@ -2329,8 +1594,7 @@ impl App {
             if close {
                 self.share_open = false;
             }
-            if (copy_link || copy_md || copy_curl) && c.is_some() {
-                let c = c.unwrap();
+            if let Some(c) = c.filter(|_| copy_link || copy_md || copy_curl) {
                 if copy_link {
                     self.copy(ctx, c.share_link(), "Share link copied");
                 } else if copy_curl {
@@ -2378,6 +1642,9 @@ impl App {
                 } else {
                     pill(ui, "PROXY OFF", AMBER, Color32::from_rgba_unmultiplied(255, 181, 84, 18));
                 }
+                if self.lan_enabled {
+                    pill(ui, "LAN EXPOSED", AMBER, Color32::from_rgba_unmultiplied(255, 181, 84, 18));
+                }
                 ui.label(
                     RichText::new("HTTP + HTTPS")
                         .size(10.0)
@@ -2424,8 +1691,8 @@ impl App {
                                 err.clone()
                             } else {
                                 format!(
-                                    "HTTP and HTTPS on 127.0.0.1:{} · {} requests in this session",
-                                    self.proxy_port,
+                                    "HTTP and HTTPS on {} · {} requests in this session",
+                                    self.binding_label(),
                                     self.captures.len()
                                 )
                             })
@@ -2437,9 +1704,6 @@ impl App {
                         if self.proxy.is_some() {
                             if secondary_button(ui, "Stop").clicked() {
                                 do_stop = true;
-                            }
-                            if primary_button(ui, "Send test request").clicked() {
-                                do_test = true;
                             }
                         } else if primary_button(ui, "Start proxy").clicked() {
                             do_start = true;
@@ -2468,13 +1732,57 @@ impl App {
                         }
                     });
                 });
+                self.capture_check_strip(ui, ctx, &mut do_test);
             });
         ui.add_space(12.0);
+
+        if self.practice.is_some() {
+            self.practice_strip(ui, ctx);
+        } else {
+            let mut start = false;
+            Frame::none()
+                .fill(Color32::from_rgba_unmultiplied(88, 140, 255, 9))
+                .stroke(Stroke::new(
+                    1.0,
+                    Color32::from_rgba_unmultiplied(88, 140, 255, 55),
+                ))
+                .rounding(10.0)
+                .inner_margin(Margin::symmetric(13.0, 9.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            ui.label(
+                                RichText::new("No phone or simulator handy?")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(TEXT),
+                            );
+                            ui.label(
+                                RichText::new(
+                                    "Run a practice session: five real calls through this gate, one answered by Map Local and one paused by a breakpoint — all on this Mac.",
+                                )
+                                .size(10.0)
+                                .color(MUTED),
+                            );
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if primary_button(ui, "Run practice session").clicked() {
+                                start = true;
+                            }
+                        });
+                    });
+                });
+            ui.add_space(12.0);
+            if start {
+                self.start_practice_session(ctx);
+            }
+        }
 
         ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                let total = ui.available_width();
+                let total = (ui.available_width() - 16.0).max(600.0);
                 let left = (total * 0.61).clamp(520.0, 820.0).min((total - 340.0).max(420.0));
                 let right = (total - left - 14.0).max(300.0);
                 ui.horizontal_top(|ui| {
@@ -2518,7 +1826,7 @@ impl App {
             self.stop_proxy(ctx);
         }
         if do_test {
-            self.test_proxy(ctx);
+            self.start_capture_check(ctx);
         }
         if do_setup_sim {
             self.setup_ios_simulator(ctx);
@@ -2568,6 +1876,112 @@ impl App {
         }
     }
 
+    /// The small proof strip under the proxy status. It answers the person's
+    /// real question -- "I connected, why is the list empty?" -- with one real
+    /// round trip and the Mac route the simulator inherits.
+    fn capture_check_strip(&mut self, ui: &mut Ui, ctx: &egui::Context, do_check: &mut bool) {
+        let phase = self.capture_check_phase();
+        let route = self.mac_route_summary();
+        ui.add_space(9.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            section_label(ui, "Capture check");
+            let (label, color) = match &phase {
+                None => ("NOT RUN".to_string(), FAINT),
+                Some(CaptureCheckPhase::Running) => ("CHECKING…".to_string(), CYAN),
+                Some(CaptureCheckPhase::Passed { .. }) => ("PASS".to_string(), GREEN),
+                Some(CaptureCheckPhase::Failed(_)) => ("FAILED".to_string(), RED),
+            };
+            pill(
+                ui,
+                &label,
+                color,
+                Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 18),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add_space(2.0);
+                ui.label(RichText::new("Full HTTPS catch").size(9.0).color(FAINT));
+                if toggle(ui, self.intercept_all)
+                    .on_hover_text("Decrypt every HTTPS host except protected system services. Trust the Proxzy certificate on the device first.")
+                    .clicked()
+                {
+                    self.set_full_catch(ctx, !self.intercept_all);
+                }
+                ui.add_space(8.0);
+                let running = matches!(phase, Some(CaptureCheckPhase::Running));
+                if ui
+                    .add_enabled(!running, egui::Button::new(if running { "Checking…" } else { "Run check" }))
+                    .clicked()
+                {
+                    *do_check = true;
+                }
+            });
+        });
+        ui.add_space(5.0);
+        ui.horizontal_wrapped(|ui| {
+            let gate = if self.proxy.is_some() {
+                format!("listening · {}", self.proxy_port)
+            } else {
+                "stopped".to_string()
+            };
+            capture_check_item(
+                ui,
+                if self.proxy.is_some() { GREEN } else { RED },
+                "Gate",
+                &gate,
+            );
+            let trip = match &phase {
+                None => ("not run".to_string(), FAINT),
+                Some(CaptureCheckPhase::Running) => ("waiting…".to_string(), CYAN),
+                Some(CaptureCheckPhase::Passed { status, latency_ms }) => {
+                    (format!("pass · {} · {} ms", status, latency_ms), GREEN)
+                }
+                Some(CaptureCheckPhase::Failed(_)) => ("failed".to_string(), RED),
+            };
+            capture_check_item(ui, trip.1, "Round trip", &trip.0);
+            let https = if !self.ssl_proxying_enabled {
+                ("off".to_string(), AMBER)
+            } else if self.intercept_all {
+                ("full catch".to_string(), GREEN)
+            } else if self.ssl_allowlist.is_empty() {
+                ("tunnels only".to_string(), AMBER)
+            } else {
+                (format!("selective · {}", self.ssl_allowlist.len()), CYAN)
+            };
+            capture_check_item(ui, https.1, "HTTPS", &https.0);
+            capture_check_item(ui, route.color, "Mac route", &route.text);
+        });
+        if let Some(CaptureCheckPhase::Failed(message)) = &phase {
+            ui.add_space(3.0);
+            ui.label(RichText::new(message).size(9.5).color(RED));
+        } else if let Some(CaptureCheckPhase::Passed { .. }) = &phase {
+            ui.add_space(3.0);
+            ui.label(
+                RichText::new("The request appeared in All Traffic. The gate, parser and recorder are working.")
+                    .size(9.5)
+                    .color(MUTED),
+            );
+        }
+        if self.mac_route.is_some() && !route.points_here {
+            ui.add_space(3.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(&route.detail)
+                        .size(9.0)
+                        .color(route.color),
+                );
+                if secondary_button(ui, "Use Mac proxy").clicked() {
+                    self.mac_proxy_confirm_open = true;
+                }
+                if secondary_button(ui, "Copy fix").clicked() {
+                    self.copy(ctx, self.mac_proxy_fix_command(), "Mac proxy fix copied");
+                }
+            });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn live_setup_card(
         &mut self,
         ui: &mut Ui,
@@ -2599,15 +2013,14 @@ impl App {
                     if secondary_button(ui, "Scan again").clicked() {
                         self.request_device_scan();
                     }
-                    ui.label(
-                        RichText::new(if scanning {
-                            "scanning…"
-                        } else {
-                            "auto-refresh 4s"
-                        })
-                        .size(8.5)
-                        .color(FAINT),
-                    );
+                    let scan_status = if scanning {
+                        "scanning…".to_string()
+                    } else if let Some(scan) = &scan {
+                        format!("{} ready · auto-refresh 4s", scan.ready_count())
+                    } else {
+                        "auto-refresh 4s".to_string()
+                    };
+                    ui.label(RichText::new(scan_status).size(8.5).color(FAINT));
                 });
             });
             ui.add_space(5.0);
@@ -2643,7 +2056,7 @@ impl App {
                     });
             } else {
                 ScrollArea::vertical()
-                    .id_source("detected-devices")
+                    .id_salt("detected-devices")
                     .max_height(168.0)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
@@ -2816,18 +2229,147 @@ impl App {
                     );
                 }
                 2 => {
-                    step_row(ui, 1, "Use the same Wi-Fi", "The phone and this Mac must be on the same network.");
-                    step_row(ui, 2, "Set a manual proxy", "On the phone's Wi-Fi settings, set HTTP proxy to this Mac's IP address and the port above.");
-                    step_row(ui, 3, "Install the certificate", "AirDrop or email the .pem file, then install it from Settings › General › VPN & Device Management.");
-                    step_row(ui, 4, "Trust it", "Open Settings › General › About › Certificate Trust Settings and enable Proxzy Local CA.");
+                    let lan = self.lan_enabled;
+                    let lan_ip = self.lan_ip.clone();
+                    let token = self.control_token.clone();
+                    ui.add_space(2.0);
+                    Frame::none()
+                        .fill(PANEL)
+                        .stroke(Stroke::new(
+                            1.0,
+                            if lan {
+                                Color32::from_rgba_unmultiplied(255, 181, 84, 120)
+                            } else {
+                                BORDER
+                            },
+                        ))
+                        .rounding(8.0)
+                        .inner_margin(Margin::symmetric(10.0, 8.0))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("LAN access")
+                                        .size(10.5)
+                                        .strong()
+                                        .color(TEXT),
+                                );
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if lan {
+                                        pill(
+                                            ui,
+                                            "LAN EXPOSED",
+                                            AMBER,
+                                            Color32::from_rgba_unmultiplied(255, 181, 84, 18),
+                                        );
+                                    } else {
+                                        pill(
+                                            ui,
+                                            "LOCAL ONLY",
+                                            GREEN,
+                                            Color32::from_rgba_unmultiplied(61, 214, 149, 18),
+                                        );
+                                    }
+                                });
+                            });
+                            ui.add_space(3.0);
+                            ui.label(
+                                RichText::new("Off by default. Turning it on lets phones on this Wi-Fi reach the proxy and the certificate page; the control API then requires a token.")
+                                    .size(9.0)
+                                    .color(FAINT),
+                            );
+                            ui.add_space(6.0);
+                            if chip(ui, "Allow LAN devices", lan).clicked() {
+                                self.set_lan_enabled(ctx, !lan);
+                            }
+                            if lan {
+                                ui.add_space(6.0);
+                                let base = format!("http://{}:{}", lan_ip, port);
+                                ui.label(
+                                    RichText::new(format!("Certificate page  {}/", base))
+                                        .font(mono(9.0))
+                                        .color(CYAN),
+                                );
+                                ui.horizontal_wrapped(|ui| {
+                                    if secondary_button(ui, "Copy portal URL").clicked() {
+                                        self.copy(ctx, base.clone(), "Portal URL copied");
+                                    }
+                                    if secondary_button(ui, "Copy .cer URL").clicked() {
+                                        self.copy(
+                                            ctx,
+                                            format!("{}/ca.cer", base),
+                                            "iPhone certificate URL copied",
+                                        );
+                                    }
+                                    if secondary_button(ui, "Copy .pem URL").clicked() {
+                                        self.copy(
+                                            ctx,
+                                            format!("{}/ca.pem", base),
+                                            "PEM certificate URL copied",
+                                        );
+                                    }
+                                });
+                                ui.add_space(5.0);
+                                let shown = if token.len() > 14 {
+                                    format!("{}…{}", &token[..9], &token[token.len() - 4..])
+                                } else {
+                                    token.clone()
+                                };
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("Control token  {}", shown))
+                                            .font(mono(9.0))
+                                            .color(FAINT),
+                                    );
+                                    if secondary_button(ui, "Copy token").clicked() {
+                                        self.copy(
+                                            ctx,
+                                            token.clone(),
+                                            "Control token copied — treat it like a password",
+                                        );
+                                    }
+                                });
+                            }
+                        });
+                    ui.add_space(10.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("Android transport").size(9.5).color(FAINT));
+                        for transport in AndroidTransport::ALL {
+                            let active = self.android_transport == transport;
+                            if chip(ui, transport.label(), active)
+                                .on_hover_text(format!("transport id: {}", transport.slug()))
+                                .clicked()
+                            {
+                                self.android_transport = transport;
+                            }
+                        }
+                    });
+                    ui.add_space(6.0);
+                    step_row(ui, 1, "Connect the phone", "iPhone: same trusted Wi-Fi with LAN access on. Android: USB with adb reverse, or Wi-Fi with LAN access on.");
+                    step_row(ui, 2, "Open the certificate page on the phone", "Enter the portal URL shown above, then download the .cer profile.");
+                    step_row(ui, 3, "Install the certificate", "iPhone: Settings › General › VPN & Device Management, then trust it in Certificate Trust Settings. Android: Security › Install a CA certificate.");
+                    step_row(ui, 4, "Set a manual proxy", "Use the LAN address and port above, or the loopback address after adb reverse.");
                     ui.add_space(4.0);
-                    let cmd = format!(
-                        "curl -x http://<this-mac-ip>:{} https://example.com/ -I\n# certificate: {}",
+                    let android_host = studio::host_for_target(
+                        TargetPlatform::AndroidDevice,
+                        if lan { &lan_ip } else { "<this-mac-ip>" },
+                        self.android_transport,
+                    );
+                    let bridge = studio::bridge_command_for(
+                        TargetPlatform::AndroidDevice,
                         port,
-                        self.ca_info
-                            .as_ref()
-                            .map(|c| c.pem_path.display().to_string())
-                            .unwrap_or_else(|| "~/Library/Application Support/Proxzy/proxzy-ca.pem".into())
+                        self.android_transport,
+                    )
+                    .map(|command| format!("{}\n", command))
+                    .unwrap_or_default();
+                    let portal = if lan {
+                        format!("http://{}:{}", lan_ip, port)
+                    } else {
+                        format!("http://<this-mac-ip>:{}", port)
+                    };
+                    let cmd = format!(
+                        "{}curl -x http://{}:{} https://example.com/ -I\n# iPhone: {}/ca.cer\n# Android: {}/ca.cer",
+                        bridge, android_host, port, portal, portal
                     );
                     command_box(ui, "Commands", &cmd, ctx, self);
                 }
@@ -2988,10 +2530,24 @@ impl App {
             ui.horizontal(|ui| {
                 section_label(ui, "SSL Proxying & Safe Mode");
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if self.ssl_allowlist.is_empty() {
+                    if !self.ssl_proxying_enabled {
                         pill(
                             ui,
-                            "SAFE MODE: 100% PASSTHROUGH",
+                            "HTTPS PASSTHROUGH (OFF)",
+                            AMBER,
+                            Color32::from_rgba_unmultiplied(255, 181, 84, 18),
+                        );
+                    } else if self.intercept_all {
+                        pill(
+                            ui,
+                            "FULL CATCH: ALL HOSTS",
+                            AMBER,
+                            Color32::from_rgba_unmultiplied(255, 181, 84, 18),
+                        );
+                    } else if self.ssl_allowlist.is_empty() {
+                        pill(
+                            ui,
+                            "SAFE MODE: HTTPS TUNNELS",
                             GREEN,
                             Color32::from_rgba_unmultiplied(61, 214, 149, 18),
                         );
@@ -3007,15 +2563,29 @@ impl App {
             });
             ui.add_space(4.0);
             ui.label(
-                RichText::new("Only matching domains have TLS intercepted & decrypted. All unlisted domains pass through securely without TLS tampering, preventing browser security warnings.")
+                RichText::new(if !self.ssl_proxying_enabled {
+                    "HTTPS interception is off: every connection stays encrypted and appears as a raw tunnel. Turn interception on to inspect app traffic."
+                } else if self.intercept_all {
+                    "Full catch is on: every HTTPS host is decrypted and inspectable, except protected Apple system services which stay on a raw tunnel. Trust the certificate on the device first."
+                } else {
+                    "Only matching domains are decrypted. Unlisted domains pass through as raw TLS tunnels, preventing certificate warnings on this Mac."
+                })
                     .size(9.5)
                     .color(MUTED),
             );
             ui.add_space(8.0);
 
             ui.horizontal(|ui| {
-                if ui.checkbox(&mut self.ssl_proxying_enabled, "Enable Selective SSL Interception").changed() {
+                if ui.checkbox(&mut self.ssl_proxying_enabled, "Enable SSL interception").changed() {
                     self.sync_proxy_config();
+                }
+                ui.add_space(10.0);
+                ui.label(RichText::new("Full HTTPS catch").size(9.5).color(FAINT));
+                if toggle(ui, self.intercept_all)
+                    .on_hover_text("One switch for every host. The CA still has to be trusted on the device.")
+                    .clicked()
+                {
+                    self.set_full_catch(ctx, !self.intercept_all);
                 }
             });
             ui.add_space(8.0);
@@ -3039,12 +2609,6 @@ impl App {
                         self.toast_now(ctx, "Domain added to SSL allowlist");
                     }
                     self.new_ssl_domain.clear();
-                }
-                if secondary_button(ui, "Intercept All (*)")
-                    .on_hover_text("Intercept and decrypt all application HTTPS (*), while safely preserving raw data on protected system services")
-                    .clicked()
-                {
-                    self.enable_ssl_for_domain("*", ctx);
                 }
                 if secondary_button(ui, "Sample API").clicked() {
                     self.enable_ssl_for_domain("*.shopwave.dev", ctx);
@@ -3081,7 +2645,7 @@ impl App {
                         ui.horizontal(|ui| {
                             dot(ui, GREEN, 6.0);
                             ui.label(
-                                RichText::new("Empty allowlist = All HTTPS passes through as raw TCP tunnels in All Traffic. You can click 'Enable TLS Decryption' on any domain in 1 click.")
+                                RichText::new("Empty allowlist = HTTPS is still listed as raw tunnels in All Traffic. Turn on Full HTTPS catch to decrypt every host, or add one domain. Install the certificate before turning full catch on.")
                                     .size(9.5)
                                     .color(MUTED),
                             );
@@ -3599,6 +3163,16 @@ fn step_row(ui: &mut Ui, n: u32, title: &str, detail: &str) {
     ui.add_space(6.0);
 }
 
+/// One label/value pair in the capture-check strip.
+fn capture_check_item(ui: &mut Ui, color: Color32, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        dot(ui, color, 5.5);
+        ui.label(RichText::new(label).size(8.5).color(FAINT));
+        ui.label(RichText::new(value).size(9.5).strong().color(TEXT));
+    });
+    ui.add_space(12.0);
+}
+
 fn kpi_card(ui: &mut Ui, width: f32, label: &str, value: &str, sub: &str, color: Color32) {
     Frame::none()
         .fill(CARD)
@@ -3606,16 +3180,21 @@ fn kpi_card(ui: &mut Ui, width: f32, label: &str, value: &str, sub: &str, color:
         .rounding(10.0)
         .inner_margin(Margin::same(13.0))
         .show(ui, |ui| {
-            ui.set_width((width - 28.0).max(60.0));
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(label).size(8.5).color(FAINT).strong());
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    dot(ui, color, 6.0);
+            // The KPI row is laid out horizontally, so the card body needs its
+            // own vertical layout; otherwise every line becomes a wide column
+            // and the last card runs off the right edge.
+            ui.vertical(|ui| {
+                ui.set_width((width - 28.0).max(60.0));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(label).size(8.5).color(FAINT).strong());
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        dot(ui, color, 6.0);
+                    });
                 });
+                ui.add_space(2.0);
+                ui.label(RichText::new(value).size(21.0).strong().color(TEXT));
+                ui.label(RichText::new(sub).size(9.0).color(FAINT));
             });
-            ui.add_space(2.0);
-            ui.label(RichText::new(value).size(21.0).strong().color(TEXT));
-            ui.label(RichText::new(sub).size(9.0).color(FAINT));
         });
 }
 
@@ -3788,18 +3367,38 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let palette_hotkey = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::COMMAND, egui::Key::K)
+                || i.consume_key(egui::Modifiers::CTRL, egui::Key::K)
+        });
+        if palette_hotkey {
+            if self.palette_open {
+                self.palette_open = false;
+            } else {
+                self.open_palette();
+            }
+        }
         self.screenshot_tick(ctx);
         self.poll_send(ctx);
         self.poll_proxy(ctx);
         self.poll_tests(ctx);
         self.advance_screen_run(ctx);
-        self.poll_proxy_test();
+        self.poll_capture_check(ctx);
+        self.poll_practice(ctx);
         self.poll_sim_reboot(ctx);
         self.poll_device_scan();
         self.poll_stale_proxy_scan();
         self.maybe_scan_devices();
-        if self.device_scanning() {
-            ctx.request_repaint_after(Duration::from_millis(150));
+        if self.proxy.is_some()
+            || self.capture_check.is_some()
+            || self
+                .practice
+                .as_ref()
+                .map(|run| !run.done)
+                .unwrap_or(false)
+            || self.device_scanning()
+        {
+            ctx.request_repaint_after(Duration::from_millis(120));
         }
         if self.selected >= self.captures.len() {
             self.selected = 0;
@@ -3939,9 +3538,22 @@ impl eframe::App for App {
                         self.guide_page(ui, ctx);
                     });
             }
+            View::Tutorial => {
+                egui::CentralPanel::default()
+                    .frame(
+                        Frame::none()
+                            .fill(BG)
+                            .inner_margin(Margin::symmetric(20.0, 16.0)),
+                    )
+                    .show(ctx, |ui| {
+                        self.tutorial_page(ui, ctx);
+                    });
+            }
         }
 
         self.modals(ctx);
         self.draw_toast(ctx);
+        self.tutorial_overlay(ctx);
+        self.feature_palette(ctx);
     }
 }

@@ -1,6 +1,7 @@
 # Rust build targets
 target/
 app/target/
+app/Cargo.lock
 **/*.rs.bk
 *.pdb
 
@@ -13,7 +14,7 @@ app/target/
 ehthumbs.db
 Thumbs.db
 
-# Certificates and Keys (Private keys must never leave host machine)
+# Certificates, private keys, and runtime tokens (never leave host machine)
 *.pem
 *.key
 *.cer
@@ -21,11 +22,17 @@ Thumbs.db
 *.pfx
 *.crt
 proxzy-ca*
+control.token
+*.token
 
 # Environment and secrets
 .env
 .env.*
 !.env.example
+
+# Node & client build artifacts
+packages/**/node_modules/
+packages/**/dist/
 
 # IDE and Editor configs
 .vscode/
@@ -35,6 +42,21 @@ proxzy-ca*
 *~
 .cursor/
 
-# Temporary run logs and activity
+# Internal workbench, screenshot dumps, and scratch harnesses
 *.log
-!build-activity.log
+checks/
+shots/
+app/shots/
+attachments/
+investigation.cany/
+.scratch/
+inbox/
+pinned/
+capture/
+reports/
+craft.json
+feed.json
+usage.json
+.ua/tmp/
+.ua/intermediate/
+.ua/.trash-*

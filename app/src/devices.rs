@@ -65,13 +65,6 @@ impl DetectedDevice {
             ("NOT READY", false)
         }
     }
-
-    pub fn connect_label(&self) -> &'static str {
-        match self.kind {
-            DeviceKind::IosSimulator => "Connect simulator…",
-            DeviceKind::AndroidEmulator | DeviceKind::AndroidDevice => "Connect device…",
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -283,10 +276,10 @@ fn avd_name(serial: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The address a physical Android phone can use to reach this Mac. The
-/// emulator uses the special host alias 10.0.2.2 instead.
+/// The address a physical mobile device can use to reach this host on the LAN.
+/// An Android emulator instead uses the special alias 10.0.2.2 or adb reverse.
 pub fn host_ip() -> Option<String> {
-    for iface in ["en0", "en1"] {
+    for iface in ["en0", "en1", "bridge100"] {
         let Ok(out) = Command::new("ipconfig")
             .args(["getifaddr", iface])
             .output()
@@ -297,8 +290,21 @@ pub fn host_ip() -> Option<String> {
             continue;
         }
         let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !value.is_empty() {
-            return Some(value);
+        if let Ok(ip) = value.parse::<std::net::IpAddr>() {
+            if !ip.is_loopback() && !ip.is_unspecified() {
+                return Some(value);
+            }
+        }
+    }
+    // Cross-platform fallback via routing-table source IP selection (does not transmit).
+    if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if sock.connect("1.1.1.1:80").is_ok() {
+            if let Ok(local) = sock.local_addr() {
+                let ip = local.ip();
+                if !ip.is_loopback() && !ip.is_unspecified() {
+                    return Some(ip.to_string());
+                }
+            }
         }
     }
     None
@@ -362,5 +368,14 @@ mod tests {
             ready: state == "device",
         });
         assert_eq!(result.ready_count(), 1);
+    }
+
+    #[test]
+    fn host_ip_never_returns_loopback_or_unspecified() {
+        if let Some(ip) = host_ip() {
+            let parsed: std::net::IpAddr = ip.parse().expect("valid IP");
+            assert!(!parsed.is_loopback());
+            assert!(!parsed.is_unspecified());
+        }
     }
 }

@@ -25,14 +25,31 @@ uses), then exit:
 cargo run -- --screenshot shots/now.png
 ```
 
+Start with full HTTPS catch already on (every host is decrypted except the
+protected system services; trust the CA on the device first):
+
+```bash
+cargo run -- --full-catch
+```
+
 Optional start page for demos:
 
 ```bash
+PROXZY_VIEW=tutorial cargo run
 PROXZY_VIEW=guide cargo run
 PROXZY_VIEW=map cargo run
 PROXZY_VIEW=breakpoints cargo run
 PROXZY_VIEW=logs cargo run
 PROXZY_VIEW=composer cargo run
+```
+
+Open the tutorial or a specific tour stop immediately:
+
+```bash
+PROXZY_DEMO=tour cargo run              # 12-stop tour from the start
+PROXZY_DEMO=tour-agent cargo run        # jump to Agent Control
+PROXZY_DEMO=tour-agent-hook cargo run   # jump to the IDE hook card
+PROXZY_DEMO=tour-6 cargo run            # any stop, 0-11
 ```
 
 Open a demo editor or dialog immediately (handy for screenshots):
@@ -44,6 +61,11 @@ PROXZY_DEMO=pause cargo run
 PROXZY_DEMO=share cargo run
 PROXZY_DEMO=connect cargo run
 PROXZY_DEMO=stale cargo run
+PROXZY_DEMO=tunnels cargo run
+PROXZY_DEMO=protected cargo run
+PROXZY_DEMO=full-catch cargo run
+PROXZY_DEMO=check cargo run
+PROXZY_DEMO=doctor cargo run
 ```
 
 `PROXZY_DEMO=connect` opens the "Connect device" confirmation as soon as a
@@ -56,16 +78,20 @@ Combine the two to capture a page with its modal, for example
 
 | Area | What it does | How to try it |
 | --- | --- | --- |
-| Live Capture | Real proxy on `127.0.0.1:9090` (falls back to 9091–9093) with HTTP and HTTPS interception | Open Live Capture, press Start proxy, then point a device at it |
-| Traffic | Captured calls with method, status, type, time and size; live rows are badged `LIVE` | Click a row to pin it; use the sidebar filters or the search box. `Follow live` jumps back to the newest call |
+| Live Capture | Real proxy on `127.0.0.1:9090` (falls back to 9091–9093) with HTTP and HTTPS interception | Open Live Capture, press Start proxy, then point a device at it. **Run check** sends one real request through the gate and reads which Mac route a simulator would inherit |
+| Traffic | Captured calls with method, status, type, time and size; live rows are badged `LIVE` | Click a row to pin it; use the sidebar filters or the search box. `Tunnels` shows raw and protected connections. `Follow live` jumps back to the newest call |
 | Inspector | Overview, Request, Response, Headers and cURL | Select a call, then switch tabs on the right. Response bodies switch between JSON (default), Raw, XML and HTML |
 | Copy & share | URL, full cURL, a local share link and Markdown | Buttons under the URL, or the cURL tab |
 | Repeat | Replays the selected call into a new capture (live HTTPS replays trust the local CA) | Select a call and press Repeat |
 | Composer | Writes and sends GraphQL or REST requests | Pick a preset or edit method, URL, headers and body, then Send. Its response panel shares the same JSON (default), Raw, XML and HTML switch |
 | Map Local | Answers matching live or Composer requests with local JSON, status and delay | Add a rule, switch it on, use Send test or the Composer |
 | Breakpoints | Pauses a real live request and lets you edit, continue or abort it | Arm a rule, send traffic through the proxy, edit, Continue or Abort |
-| Log Dashboard | One timeline for captures, mocks, breakpoints and system events | Filter by Info / Warn / Error; copy the session summary |
+| Log Activity | One timeline for captures, mocks, breakpoints and system events | Open it from Monitor in the rail, the Logs chip in the top bar, or All features; filter by Info / Warn / Error and copy the session summary |
+| Agent Control | A loopback control plane an external agent or IDE can drive, plus Map Local scenario switches and body injection | Open Agent Control, copy a brief under **Hook an IDE**, then let the agent call `/__proxzy/health` and `/__proxzy/scenario` |
+| API Test Bench | Runs saved requests through the mock engine and pins the expected verdict | Open API Test Bench, pick a target, then Run selected or Run all |
+| Screen Play & MCP | A scripted tour of the app for recording or demoing | Open Screen Play and start a play |
 | Guide & Stack | Built-in teaching page | Open Guide & Stack in the sidebar, or the ? button |
+| Tutorial | A 12-stop guided tour that switches to each page, dims the background and explains the main control | Open Tutorial under **Start Here**, or press the top-bar **Tutorial** chip. Use Back / Next stop, arrow keys, or Skip to Agent. Esc exits |
 
 ## Live capture and certificates
 
@@ -77,6 +103,35 @@ The proxy creates a local certificate authority on first launch:
 
 Only the `.pem`/`.cer` files are meant to leave the Mac. The private key stays
 in that folder.
+
+### Safe capture: raw tunnels and protected domains
+
+Every TCP connection is listed, even before decryption is on. An HTTPS app
+domain that is not in the SSL allowlist appears with a `RAW TUNNEL` badge; its
+bytes still flow normally but their contents stay encrypted. Select that row in
+All Traffic and press **Enable TLS Decryption**, or turn on **Full HTTPS catch**
+on Live Capture, to decrypt later requests from that domain. Protected system
+domains are still left on a raw tunnel even when full catch is on.
+
+Apple push, OS update and certificate-check domains, plus Google Play services,
+always stay raw and carry a `PROTECTED` badge. That keeps macOS and simulators
+safe from certificate errors and SSL pinning crashes. The sample session
+includes one PROTECTED row and one RAW TUNNEL row under the **Tunnels** filter.
+
+### Capture check
+
+**Run check** on Live Capture answers "is the gate actually catching traffic?" in one
+step. It sends `GET http://proxzy.gateway/__proxzy/check?nonce=…` through the real
+proxy, shows the status and timing, and reports the HTTPS mode next to it. The
+same strip reads which web proxy the Mac currently has enabled: a simulator
+inherits that route, so **Direct (off)** means app traffic never reaches Proxzy.
+The check never changes a setting. To turn the proxy on, press **Set Mac proxy**
+and confirm; if macOS refuses, the app shows the matching `sudo networksetup`
+command to copy.
+
+`PROXZY_DEMO=check` opens this check automatically, and `PROXZY_DEMO=doctor`
+opens it and leaves the result on screen, which is how the project screenshots
+are taken.
 
 ### iOS Simulator
 
@@ -113,6 +168,23 @@ with a **Restore now** button. Closing Proxzy restores the proxy automatically,
 so the browser does not keep showing "No internet" after the app quits. Press
 **Clear Mac proxy** on the Live Capture page to restore it by hand at any time.
 
+## Hook an IDE
+
+Agent Control ends with a **Hook an IDE** card. It builds a plain-text brief for
+Cursor, VS Code, Claude Code or JetBrains and copies it together with the rules
+file that client reads (`.cursor/rules/proxzy.mdc`,
+`.github/copilot-instructions.md`, `CLAUDE.md`, `.junie/guidelines.md`). The
+brief names the proxy and control-plane ports, the CA path for simulators, the
+health/scenario/inject/session calls, and the rule that a check only passes when
+the engine response confirms it.
+
+Nothing is written into another project for you. Paste the brief where the agent
+reads its project context, then ask it to run the copied health command. That
+request appears under **Control plane feed**, and the same agent can switch a
+scenario or inject a body token before it reports a result. The control plane is
+loopback-only and rejects browser-origin calls, so a local harness cannot expose
+it to a web page.
+
 ## What is real and what is simulated
 
 - **Real:** the local proxy, TLS interception, the CA and its certificate
@@ -143,8 +215,9 @@ so the browser does not keep showing "No internet" after the app quits. Press
   logic, certificate and simulator helpers.
 - `src/devices.rs` — background discovery of booted iOS simulators and Android
   emulators/phones through `xcrun simctl` and `adb`.
-- `src/views.rs` — Live Capture, Composer, Map Local, Breakpoints, Log Dashboard
+- `src/views.rs` — Live Capture, Composer, Map Local, Breakpoints, Log Activity
   and Guide pages.
+- `src/tour_ui.rs` — the Tutorial page, its sidebar sketch and the 12-stop overlay.
 - `src/rules_ui.rs` — shared rule tables and editors.
 - `src/model.rs` — sample traffic, rules and helper formatting.
 - `src/theme.rs` — colours, typography and shared widgets.
