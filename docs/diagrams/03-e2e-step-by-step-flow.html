@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ProxzyCraft · Step-by-Step E2E Loop Using snipCode</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;
+      --color-ink:     #2d3142;
+      --color-muted:   #4f5d75;
+      --color-accent:  #bf4520;
+      --font-sans:     'Geist', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1200px; width: 100%; }
+    .diagram-container { width: 100%; overflow-x: auto; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 960px; display: block; }
+
+    @media print {
+      .diagram-container { overflow-x: visible; }
+      svg { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Step 3 of 3 · Runtime Loop · Step-by-Step Usage</p>
+    <h1>From copied snipCode to verified UI &amp; drift report</h1>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="e2e-loop-title e2e-loop-desc">
+        <title id="e2e-loop-title">Step-by-step E2E loop using ProxzyCraft snipCode</title>
+        <desc id="e2e-loop-desc">A test run checks proxy health, launches the app with copied harness snippets, switches scenarios and injects values, verifies mock hits, and optionally audits live contract drift.</desc>
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#bf4520"/></marker>
+          <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+        </defs>
+
+        <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+        <!-- Zones -->
+        <rect x="40" y="64" width="880" height="168" rx="8"
+              fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+        <rect x="56" y="68" width="176" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="144" y="77" fill="#5a6580" font-size="7" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.14em">1 · SETUP &amp; STATE CONTROL</text>
+
+        <rect x="40" y="268" width="880" height="196" rx="8"
+              fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+        <rect x="56" y="272" width="184" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="148" y="281" fill="#5a6580" font-size="7" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.14em">2 · APP TRAFFIC &amp; ASSERTION</text>
+
+        <!-- Arrows (drawn before boxes) -->
+        <!-- Step 1 -> Step 2 (top row horizontal) -->
+        <line x1="252" y1="152" x2="364" y2="152" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+        <!-- Step 2 -> Step 3 (top row horizontal) -->
+        <line x1="564" y1="152" x2="676" y2="152" stroke="#bf4520" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+
+        <!-- Step 3 (bottom x=776, y=184) -> Step 4 Map Local (top x=776, y=324) -->
+        <line x1="776" y1="184" x2="776" y2="324" stroke="#bf4520" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+
+        <!-- Step 2 (bottom x=464, y=184) -> Step 5 App Action (top x=464, y=324) -->
+        <line x1="464" y1="184" x2="464" y2="324" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+
+        <!-- Step 5 App Action (right x=564, y=356) -> Step 4 Map Local (left x=676, y=356) -->
+        <line x1="564" y1="356" x2="676" y2="356" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+
+        <!-- Step 4 Map Local (left x=676, y=372) -> Step 5 App Action (right x=564, y=372) return dashed -->
+        <line x1="676" y1="372" x2="564" y2="372" stroke="#bf4520" stroke-width="1.1" stroke-dasharray="4,3" marker-end="url(#arrow-accent)"/>
+
+        <!-- Step 5 App Action (left x=364, y=356) -> Step 6 Verify & Drift (right x=252, y=356) -->
+        <line x1="364" y1="356" x2="252" y2="356" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+        <!-- Step 6 Verify -> Step 3 loop back (next scenario: left/top route via x=152 -> up to y=184? No: dashed bottom-to-top? No, avoid transit! Route cleanly to Step 1 or keep 6 steps clear!) -->
+        <!-- Optional dashed arrow from Step 4 bottom (x=776, y=388) down-left to Step 6 bottom (x=152, y=388) -->
+        <path d="M 776,388 V 420 Q 776,428 768,428 H 160 Q 152,428 152,420 V 388"
+              fill="none" stroke="#4f5d75" stroke-width="1.0" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+
+        <!-- Arrow Labels (opaque masks, >=6px visible gap from strokes) -->
+        <rect x="276" y="132" width="64" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="308" y="141" fill="#5a6580" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">OK: TRUE</text>
+
+        <rect x="584" y="132" width="72" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="620" y="141" fill="#bf4520" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">SET STATE</text>
+
+        <rect x="786" y="246" width="64" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="818" y="255" fill="#bf4520" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">ARM RULE</text>
+
+        <rect x="380" y="246" width="74" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="417" y="255" fill="#2e5aa8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">PROXY ENV</text>
+
+        <rect x="580" y="336" width="80" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="620" y="345" fill="#2e5aa8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">HTTPS REQ</text>
+
+        <rect x="584" y="380" width="72" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="620" y="389" fill="#bf4520" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">0MS MOCK</text>
+
+        <rect x="276" y="336" width="64" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="308" y="345" fill="#5a6580" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">UI CHECK</text>
+
+        <rect x="424" y="436" width="80" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="464" y="445" fill="#5a6580" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">HITS &amp; DRIFT</text>
+
+        <!-- Step 1: Health Preflight -->
+        <rect x="52" y="120" width="200" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="52" y="120" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <rect x="60" y="128" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+        <text x="82" y="137" fill="#2d3142" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STEP 1</text>
+        <text x="152" y="156" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Health Check</text>
+        <text x="152" y="172" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">health_curl_for</text>
+
+        <!-- Step 2: Launch with Harness Snippet -->
+        <rect x="364" y="120" width="200" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="364" y="120" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <rect x="372" y="128" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+        <text x="394" y="137" fill="#2d3142" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STEP 2</text>
+        <text x="464" y="156" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Launch With Proxy</text>
+        <text x="464" y="172" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Env · XCTest · Espresso</text>
+
+        <!-- Step 3: Switch Scenario & Inject -->
+        <rect x="676" y="120" width="200" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="676" y="120" width="200" height="64" rx="6" fill="rgba(191,69,32,0.08)" stroke="#bf4520" stroke-width="1.2"/>
+        <rect x="684" y="128" width="44" height="12" rx="2" fill="transparent" stroke="rgba(191,69,32,0.50)" stroke-width="0.8"/>
+        <text x="706" y="137" fill="#bf4520" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STEP 3</text>
+        <text x="776" y="156" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Scenario &amp; Inject</text>
+        <text x="776" y="172" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">scenario_curl · inject</text>
+
+        <!-- Step 4: MapRule Engine (Focal #2) -->
+        <rect x="676" y="324" width="200" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="676" y="324" width="200" height="64" rx="6" fill="rgba(191,69,32,0.08)" stroke="#bf4520" stroke-width="1.2"/>
+        <rect x="684" y="332" width="44" height="12" rx="2" fill="transparent" stroke="rgba(191,69,32,0.50)" stroke-width="0.8"/>
+        <text x="706" y="341" fill="#bf4520" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STEP 4</text>
+        <text x="776" y="360" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Map Local Serves</text>
+        <text x="776" y="376" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">render_injected_body</text>
+
+        <!-- Step 5: Tap & Render UI -->
+        <rect x="364" y="324" width="200" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="364" y="324" width="200" height="64" rx="6" fill="rgba(79,93,117,0.10)" stroke="#5a6580" stroke-width="1"/>
+        <rect x="372" y="332" width="44" height="12" rx="2" fill="transparent" stroke="rgba(90,101,128,0.45)" stroke-width="0.8"/>
+        <text x="394" y="341" fill="#5a6580" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STEP 5</text>
+        <text x="464" y="360" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">App Screen Action</text>
+        <text x="464" y="376" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">MCP · Playwright · UI</text>
+
+        <!-- Step 6: Verify Hits & Drift -->
+        <rect x="52" y="324" width="200" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="52" y="324" width="200" height="64" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+        <rect x="60" y="332" width="44" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.45)" stroke-width="0.8"/>
+        <text x="82" y="341" fill="#4f5d75" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STEP 6</text>
+        <text x="152" y="360" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Verify Hits &amp; Drift</text>
+        <text x="152" y="376" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">expectHits · session</text>
+
+        <!-- Legend strip -->
+        <line x1="40" y1="512" x2="920" y2="512" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+        <text x="40" y="532" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.18em">LEGEND</text>
+
+        <rect x="40" y="548" width="16" height="12" rx="2" fill="rgba(191,69,32,0.08)" stroke="#bf4520" stroke-width="1.2"/>
+        <text x="64" y="558" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">Focal mock mutation &amp; reply</text>
+
+        <rect x="268" y="548" width="16" height="12" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <text x="292" y="558" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">Host preflight &amp; launch</text>
+
+        <line x1="468" y1="554" x2="500" y2="554" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+        <text x="508" y="558" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">App proxy traffic</text>
+
+        <line x1="652" y1="554" x2="684" y2="554" stroke="#bf4520" stroke-width="1.1" stroke-dasharray="4,3" marker-end="url(#arrow-accent)"/>
+        <text x="692" y="558" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">Injected mock response</text>
+      </svg>
+    </div>
+  </div>
+</body>
+</html>
