@@ -488,6 +488,7 @@ pub enum NavIcon {
     Shield,
     Help,
     Compass,
+    Bridge,
 }
 
 pub fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, kind: NavIcon, color: Color32) {
@@ -736,6 +737,27 @@ pub fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, kind: NavIcon, 
                 vec![north, east, south, west],
                 Stroke::new(1.1, color),
             ));
+        }
+        NavIcon::Bridge => {
+            // Two endpoints with a double line between them: the adapter.
+            let left = r.center() + Vec2::new(-5.4, 0.0);
+            let right = r.center() + Vec2::new(5.4, 0.0);
+            p.circle_stroke(left, 2.7, stroke);
+            p.circle_stroke(right, 2.7, stroke);
+            p.line_segment(
+                [
+                    left + Vec2::new(2.7, -1.3),
+                    right + Vec2::new(-2.7, -1.3),
+                ],
+                stroke,
+            );
+            p.line_segment(
+                [
+                    left + Vec2::new(2.7, 1.3),
+                    right + Vec2::new(-2.7, 1.3),
+                ],
+                stroke,
+            );
         }
     }
 }

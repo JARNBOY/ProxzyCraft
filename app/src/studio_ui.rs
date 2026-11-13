@@ -1131,6 +1131,7 @@ impl App {
 
     fn agent_ide_card(&mut self, ui: &mut Ui, ctx: &egui::Context, port: u16) {
         let mut copy: Option<(String, &'static str)> = None;
+        let mut open_acp = false;
         studio_card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Hook an IDE").size(13.0).strong().color(TEXT));
@@ -1209,9 +1210,24 @@ impl App {
             });
             ui.add_space(4.0);
             code_block(ui, &health, 26.0, false);
+            ui.add_space(3.0);
+            ui.horizontal(|ui| {
+                studio_note(
+                    ui,
+                    "ACP is the editor-to-agent link; this brief only wires the agent to Proxzy.",
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if secondary_button(ui, "Open ACP Bridge").clicked() {
+                        open_acp = true;
+                    }
+                });
+            });
         });
         if let Some((text, message)) = copy {
             self.copy(ctx, text, message);
+        }
+        if open_acp {
+            self.view = View::Acp;
         }
     }
 
@@ -2605,6 +2621,7 @@ impl App {
         let tabs = ["Env", "Playwright", "MCP", "XCTest", "Espresso"];
         let mut copy_snippet = false;
         let mut open_agent = false;
+        let mut open_acp = false;
         let mut turn_on_lan = false;
         let host = self.screen_target_host();
         let token = self.screen_target_token();
@@ -2693,17 +2710,19 @@ impl App {
             });
             ui.add_space(5.0);
             code_block(ui, &snippet, 168.0, false);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if secondary_button(ui, "Copy snippet").clicked() {
                     copy_snippet = true;
                 }
                 if secondary_button(ui, "Agent Control").clicked() {
                     open_agent = true;
                 }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    studio_note(ui, "ENV keys stay the same for every harness.");
-                });
+                if secondary_button(ui, "ACP Bridge").clicked() {
+                    open_acp = true;
+                }
             });
+            ui.add_space(3.0);
+            studio_note(ui, "ENV keys stay the same for every harness.");
 
             ui.add_space(9.0);
             hsep(ui);
@@ -2737,6 +2756,9 @@ impl App {
         }
         if open_agent {
             self.view = View::Agent;
+        }
+        if open_acp {
+            self.view = View::Acp;
         }
     }
 
@@ -3544,15 +3566,9 @@ impl App {
     }
 
     fn pipeline_preview(&mut self, ui: &mut Ui, ctx: &egui::Context, rule: &MapRule) {
-        let mut tokens: Vec<(String, String)> = rule
-            .inject_props
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        tokens.sort();
         let serving = self.map_enabled && rule.enabled;
         let body = if serving {
-            apply_tokens(&rule.body, &tokens)
+            rule.response_body()
         } else if rule.enabled {
             "The engine is off. Arm it above to serve this stored body.".to_string()
         } else {
@@ -3662,11 +3678,7 @@ impl App {
         });
 
         if copy_body {
-            self.copy(
-                ctx,
-                apply_tokens(&rule.body, &tokens),
-                "Stored response body copied",
-            );
+            self.copy(ctx, rule.response_body(), "Served response body copied");
         }
         if copy_curl {
             self.copy(ctx, curl, "Scoped cURL copied");
@@ -3849,14 +3861,6 @@ fn stage_badge(ui: &mut Ui, number: &str, label: &str, color: Color32) {
     );
 }
 
-fn apply_tokens(body: &str, tokens: &[(String, String)]) -> String {
-    let mut out = body.to_string();
-    for (key, value) in tokens {
-        out = out.replace(&format!("{{{{{}}}}}", key), value);
-    }
-    out
-}
-
 /// A tiny down-arrow between two pipeline stages.
 fn pipeline_arrow(ui: &mut Ui) {
     ui.horizontal(|ui| {
@@ -3892,7 +3896,7 @@ fn ide_brief(port: u16, ide: &str, place: &str) -> String {
 fn agent_scroll_offset() -> f32 {
     match std::env::var("PROXZY_DEMO").unwrap_or_default().as_str() {
         "agent-hook" => 980.0,
-        "agent-brief" => 1120.0,
+        "agent-brief" => 1240.0,
         _ => 0.0,
     }
 }

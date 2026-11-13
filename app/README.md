@@ -41,15 +41,25 @@ PROXZY_VIEW=map cargo run
 PROXZY_VIEW=breakpoints cargo run
 PROXZY_VIEW=logs cargo run
 PROXZY_VIEW=composer cargo run
+PROXZY_VIEW=acp cargo run
 ```
 
 Open the tutorial or a specific tour stop immediately:
 
 ```bash
-PROXZY_DEMO=tour cargo run              # 12-stop tour from the start
+PROXZY_DEMO=tour cargo run              # 13-stop tour from the start
 PROXZY_DEMO=tour-agent cargo run        # jump to Agent Control
 PROXZY_DEMO=tour-agent-hook cargo run   # jump to the IDE hook card
-PROXZY_DEMO=tour-6 cargo run            # any stop, 0-11
+PROXZY_DEMO=tour-acp cargo run          # jump to ACP Bridge
+PROXZY_DEMO=tour-6 cargo run            # any stop, 0-12
+```
+
+The ACP screen also has three demo states:
+
+```bash
+PROXZY_DEMO=acp-replay cargo run        # auto-play the concept session
+PROXZY_DEMO=acp-full cargo run          # allowed run, stopped at the end
+PROXZY_DEMO=acp-deny cargo run          # rejected permission, stopped at refusal
 ```
 
 Open a demo editor or dialog immediately (handy for screenshots):
@@ -84,14 +94,15 @@ Combine the two to capture a page with its modal, for example
 | Copy & share | URL, full cURL, a local share link and Markdown | Buttons under the URL, or the cURL tab |
 | Repeat | Replays the selected call into a new capture (live HTTPS replays trust the local CA) | Select a call and press Repeat |
 | Composer | Writes and sends GraphQL or REST requests | Pick a preset or edit method, URL, headers and body, then Send. Its response panel shares the same JSON (default), Raw, XML and HTML switch |
-| Map Local | Answers matching live or Composer requests with local JSON, status and delay | Add a rule, switch it on, use Send test or the Composer |
+| Map Local | Answers matching live or Composer requests with local JSON, status and delay; a rule can also link a fixture file on disk and read it on every request | Add a rule, switch it on, optionally browse to or paste a local file path, use Send test or the Composer |
 | Breakpoints | Pauses a real live request and lets you edit, continue or abort it | Arm a rule, send traffic through the proxy, edit, Continue or Abort |
-| Log Activity | One timeline for captures, mocks, breakpoints and system events | Open it from Monitor in the rail, the Logs chip in the top bar, or All features; filter by Info / Warn / Error and copy the session summary |
+| Log Dashboard | One timeline for captures, mocks, breakpoints and system events | Open it from Monitor in the rail, the Logs chip in the top bar, or All features; filter by Info / Warn / Error and copy the session summary |
 | Agent Control | A loopback control plane an external agent or IDE can drive, plus Map Local scenario switches and body injection | Open Agent Control, copy a brief under **Hook an IDE**, then let the agent call `/__proxzy/health` and `/__proxzy/scenario` |
+| ACP Bridge | A concept lab for the editor ↔ agent side of an AI coding setup: ACP v1 handshake, streamed updates and a permission gate | Open ACP Bridge, step through the session, then choose Allow once, Always allow or Reject |
 | API Test Bench | Runs saved requests through the mock engine and pins the expected verdict | Open API Test Bench, pick a target, then Run selected or Run all |
 | Screen Play & MCP | A scripted tour of the app for recording or demoing | Open Screen Play and start a play |
 | Guide & Stack | Built-in teaching page | Open Guide & Stack in the sidebar, or the ? button |
-| Tutorial | A 12-stop guided tour that switches to each page, dims the background and explains the main control | Open Tutorial under **Start Here**, or press the top-bar **Tutorial** chip. Use Back / Next stop, arrow keys, or Skip to Agent. Esc exits |
+| Tutorial | A 13-stop guided tour that switches to each page, dims the background and explains the main control | Open Tutorial under **Start Here**, or press the top-bar **Tutorial** chip. Use Back / Next stop, arrow keys, or Skip to Agent. Esc exits |
 
 ## Live capture and certificates
 
@@ -185,6 +196,37 @@ scenario or inject a body token before it reports a result. The control plane is
 loopback-only and rejects browser-origin calls, so a local harness cannot expose
 it to a web page.
 
+## ACP Bridge
+
+Agent Control answers "how does an agent drive Proxzy?" ACP Bridge answers the
+question before that: how does an editor launch and supervise an AI coding
+agent at all? **ACP** (Agent Client Protocol) is the editor ↔ agent link. **MCP**
+is the agent ↔ tools link. Proxzy sits behind both as the HTTP gate that sees
+the request the agent finally sends.
+
+The page is a concept lab, not a live transport. It walks the public ACP v1
+flow over JSON-RPC 2.0 on stdio:
+
+1. `initialize` agrees on the protocol version and capabilities.
+2. `session/new` names an absolute working folder and any MCP servers.
+3. `session/prompt` sends the user's words.
+4. `session/update` streams tool calls and message chunks back.
+5. `session/request_permission` pauses before a side effect; the human chooses
+   Allow once, Always allow or Reject.
+6. `session/prompt` closes with a `stopReason` such as `end_turn` or `refusal`.
+
+The transcript is simulated; no ACP process or tool call runs inside the lab.
+The port printed on the page is the real loopback control plane an ACP agent
+would call, and the sample tool shows how that agent could switch Map Local
+rule MAP-01 to Error before sending the checkout request. Rejecting the
+permission shows the agent stopping without that side effect. Copy-ready tabs
+provide an editor `agent_servers` entry, an MCP server entry and a short agent
+prompt.
+
+Two things the lab deliberately keeps apart: ACP is not an HTTP proxy, and MCP
+is not ACP. The editor owns the agent process and the permission gate; Proxzy
+only owns the HTTP request that can be mocked, inspected or replayed.
+
 ## What is real and what is simulated
 
 - **Real:** the local proxy, TLS interception, the CA and its certificate
@@ -192,9 +234,9 @@ it to a web page.
   Composer sends through the system `curl`, repeat, clipboard actions, and every
   dashboard number.
 - **Simulated:** the seeded opening traffic rows (badged `SAMPLE`), the
-  pre-filled demo rules, and the response-stage breakpoint editor. HTTPS
-  interception is HTTP/1.1 only; HTTP/2 and gRPC are not advertised through the
-  proxy.
+  pre-filled demo rules, the response-stage breakpoint editor, and the ACP
+  session transcript. HTTPS interception is HTTP/1.1 only; HTTP/2 and gRPC are
+  not advertised through the proxy.
 - **All access:** every control that exists is usable. Nothing is locked behind
   an account or trial.
 
@@ -215,9 +257,13 @@ it to a web page.
   logic, certificate and simulator helpers.
 - `src/devices.rs` — background discovery of booted iOS simulators and Android
   emulators/phones through `xcrun simctl` and `adb`.
-- `src/views.rs` — Live Capture, Composer, Map Local, Breakpoints, Log Activity
+- `src/views.rs` — Live Capture, Composer, Map Local, Breakpoints, Log Dashboard
   and Guide pages.
-- `src/tour_ui.rs` — the Tutorial page, its sidebar sketch and the 12-stop overlay.
+- `src/acp.rs` — ACP concept session transcript, permission model, checks and
+  copy-ready setup templates.
+- `src/acp_ui.rs` — the ACP Bridge page and its flow diagram.
+- `src/studio_ui.rs` — Agent Control, API Test Bench and Screen Play & MCP.
+- `src/tour_ui.rs` — the Tutorial page, its sidebar sketch and the 13-stop overlay.
 - `src/rules_ui.rs` — shared rule tables and editors.
 - `src/model.rs` — sample traffic, rules and helper formatting.
 - `src/theme.rs` — colours, typography and shared widgets.

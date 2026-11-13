@@ -1042,7 +1042,7 @@ where
             {
                 headers.push(("access-control-allow-origin".into(), origin.1.clone()));
             }
-            let rendered_body = rule.render_injected_body();
+            let rendered_body = rule.response_body();
             let resp = make_response(rule.status, reason(rule.status), headers, rendered_body.into_bytes());
             write_response(client, &resp, request.method == "HEAD").await?;
             mock_name = Some(rule.name.clone());
@@ -1200,6 +1200,7 @@ where
                                 .unwrap_or_else(|| "application/json".into()),
                             delay_ms: 0,
                             body: sanitized_body.clone(),
+                            local_file: String::new(),
                             graphql_name: String::new(),
                             enabled: true,
                             hits: 0,

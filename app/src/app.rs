@@ -25,6 +25,7 @@ enum View {
     Agent,
     Tests,
     Screen,
+    Acp,
     Guide,
     Tutorial,
 }
@@ -199,6 +200,7 @@ struct MapEditor {
     content_type: String,
     delay: String,
     body: String,
+    local_file: String,
     graphql_name: String,
     enabled: bool,
     active_scenario: MockScenario,
@@ -246,6 +248,21 @@ impl MapEditor {
                 self.body = self.empty_body.clone();
             }
         }
+    }
+
+    fn load_local_file(&mut self) -> Result<(), String> {
+        let path = self.local_file.trim().to_string();
+        if path.is_empty() {
+            return Err("Paste a file path first".into());
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Could not read {}: {}", path, e))?;
+        self.body = text;
+        if self.content_type.trim().is_empty() || self.content_type == "application/json" {
+            self.content_type = content_type_for_path(&path).to_string();
+        }
+        self.sync_current_to_slot();
+        Ok(())
     }
 
     fn apply_curl(&mut self) -> bool {
@@ -510,6 +527,15 @@ pub struct App {
     screen_export: String,
     screen_import: String,
     android_transport: AndroidTransport,
+    // ---- ACP concept bridge -----------------------------------------------
+    /// Last revealed message in the simulated ACP session.
+    acp_progress: usize,
+    acp_selected: usize,
+    acp_permission: AcpPermission,
+    acp_playing: bool,
+    acp_entered: Instant,
+    /// 0 = editor config, 1 = MCP entry, 2 = agent prompt.
+    acp_tab: usize,
 }
 
 impl App {
@@ -531,6 +557,7 @@ impl App {
             "agent" | "agent-control" => View::Agent,
             "tests" | "test-bench" => View::Tests,
             "screen" | "screen-play" | "mcp" => View::Screen,
+            "acp" | "agent-protocol" | "protocol" => View::Acp,
             "guide" => View::Guide,
             "tutorial" | "learn" | "tour" => View::Tutorial,
             _ => View::Traffic,
@@ -693,6 +720,12 @@ impl App {
             android_transport: AndroidTransport::from_slug(
                 &std::env::var("PROXZY_ANDROID_TRANSPORT").unwrap_or_default(),
             ),
+            acp_progress: ACP_GATE_INDEX,
+            acp_selected: ACP_GATE_INDEX,
+            acp_permission: AcpPermission::Pending,
+            acp_playing: false,
+            acp_entered: Instant::now(),
+            acp_tab: 0,
         };
         app.agent_rule = app.map_rules.first().map(|r| r.id);
         app.sync_proxy_config();
@@ -787,6 +820,27 @@ impl App {
             }
             "tour-agent-hook" => {
                 app.begin_tour(tour_index_for_art(TourArt::AgentHook));
+            }
+            "tour-acp" => {
+                app.begin_tour(tour_index_for(View::Acp));
+            }
+            "acp-replay" => {
+                app.view = View::Acp;
+                app.acp_reset(true);
+            }
+            "acp-full" => {
+                app.view = View::Acp;
+                app.acp_permission = AcpPermission::AllowOnce;
+                let len = acp_transcript(app.proxy_port, app.acp_permission).len();
+                app.acp_progress = len.saturating_sub(1);
+                app.acp_selected = app.acp_progress;
+            }
+            "acp-deny" => {
+                app.view = View::Acp;
+                app.acp_permission = AcpPermission::RejectOnce;
+                let len = acp_transcript(app.proxy_port, app.acp_permission).len();
+                app.acp_progress = len.saturating_sub(1);
+                app.acp_selected = app.acp_progress;
             }
             other if other.starts_with("tour-") => {
                 if let Ok(index) = other["tour-".len()..].parse::<usize>() {
@@ -1191,6 +1245,7 @@ impl App {
                 content_type: "application/json".into(),
                 delay_ms: 6,
                 body: success.into(),
+                local_file: String::new(),
                 graphql_name: String::new(),
                 enabled: true,
                 hits: 0,
@@ -1352,7 +1407,7 @@ impl App {
             );
             self.toast_now(
                 ctx,
-                "Practice complete — check the Mocked filter and Log Activity",
+                "Practice complete — check the Mocked filter and Log Dashboard",
             );
             ctx.request_repaint();
         }
@@ -2321,10 +2376,11 @@ impl App {
                 .cloned()
             {
                 let mut nc = c.clone();
+                let served_body = rule.response_body();
                 nc.status = rule.status;
                 nc.latency_ms = rule.delay_ms;
-                nc.resp_body = rule.body.clone();
-                nc.size_bytes = rule.body.len() as u64;
+                nc.size_bytes = served_body.len() as u64;
+                nc.resp_body = served_body;
                 nc.mock = Some(rule.name.clone());
                 nc.started = now_stamp();
                 nc.resp_headers = vec![
@@ -2713,6 +2769,7 @@ impl App {
                     content_type: r.content_type,
                     delay: r.delay_ms.to_string(),
                     body: r.body,
+                    local_file: r.local_file,
                     graphql_name: r.graphql_name,
                     enabled: r.enabled,
                     active_scenario: r.active_scenario,
@@ -2744,6 +2801,7 @@ impl App {
                     content_type: "application/json".into(),
                     delay: "20".into(),
                     body: default_body.clone(),
+                    local_file: String::new(),
                     graphql_name: String::new(),
                     enabled: true,
                     active_scenario: MockScenario::Success,
@@ -2841,6 +2899,7 @@ impl App {
             },
             delay_ms: ed.delay.trim().parse::<u64>().unwrap_or(0),
             body: ed.body,
+            local_file: ed.local_file.trim().to_string(),
             graphql_name: ed.graphql_name.trim().to_string(),
             enabled: ed.enabled,
             hits: 0,
@@ -3249,13 +3308,14 @@ impl App {
                 .find(|r| r.matches(&method, &url, &body))
                 .cloned()
             {
+                let served_body = rule.response_body();
                 let mut c = Capture {
                     id: 0,
                     method: method.clone(),
                     url: url.clone(),
                     status: rule.status,
                     latency_ms: rule.delay_ms,
-                    size_bytes: rule.body.len() as u64,
+                    size_bytes: served_body.len() as u64,
                     kind: detect_kind(&method, &url, &body),
                     started: now_stamp(),
                     remote: "map-local".into(),
@@ -3266,7 +3326,7 @@ impl App {
                         ("content-type".into(), rule.content_type.clone()),
                         ("x-proxzy-rule".into(), rule.name.clone()),
                     ],
-                    resp_body: rule.body.clone(),
+                    resp_body: served_body,
                     graphql: None,
                     mock: Some(rule.name.clone()),
                     pinned: false,
@@ -3481,7 +3541,7 @@ impl App {
             },
             PaletteEntry {
                 group: "Screens",
-                label: "Log Activity",
+                label: "Log Dashboard",
                 hint: "Timeline and dashboard for traffic, mocks and breakpoints",
                 icon: NavIcon::Logs,
                 action: PaletteAction::Go(View::Logs),
@@ -3523,6 +3583,13 @@ impl App {
             },
             PaletteEntry {
                 group: "Screens",
+                label: "ACP Bridge",
+                hint: "Editor-to-agent session, permission gate and setup",
+                icon: NavIcon::Bridge,
+                action: PaletteAction::Go(View::Acp),
+            },
+            PaletteEntry {
+                group: "Screens",
                 label: "API Test Bench",
                 hint: "Run saved requests with pass or fail checks",
                 icon: NavIcon::Tests,
@@ -3538,7 +3605,7 @@ impl App {
             PaletteEntry {
                 group: "Screens",
                 label: "Tutorial",
-                hint: "A 12-stop guided tour of every main screen",
+                hint: "A guided tour of every main screen",
                 icon: NavIcon::Compass,
                 action: PaletteAction::Go(View::Tutorial),
             },
@@ -3559,7 +3626,7 @@ impl App {
             PaletteEntry {
                 group: "Quick actions",
                 label: "Start guided tutorial",
-                hint: "Open the 12-stop tour from the first screen",
+                hint: "Open the guided tour from the first screen",
                 icon: NavIcon::Compass,
                 action: PaletteAction::StartTour,
             },
@@ -4021,7 +4088,7 @@ impl App {
                             self.view == View::Logs,
                         )
                         .on_hover_text(
-                            "Log Activity — every capture, mock and breakpoint event",
+                            "Log Dashboard — every capture, mock and breakpoint event",
                         );
                         if logs.clicked() {
                             self.view = View::Logs;
@@ -4302,7 +4369,7 @@ impl App {
         let logs = nav_row(
             ui,
             NavIcon::Logs,
-            "Log Activity",
+            "Log Dashboard",
             Some(self.logs.len()),
             self.view == View::Logs,
         )
@@ -4323,6 +4390,12 @@ impl App {
                 "Agent Control",
                 NavIcon::Agent,
                 Some(self.map_rules.iter().filter(|r| r.enabled).count()),
+            ),
+            (
+                View::Acp,
+                "ACP Bridge",
+                NavIcon::Bridge,
+                None,
             ),
             (
                 View::Tests,
@@ -4562,7 +4635,7 @@ impl App {
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new(
-                            "One call was answered by Map Local and one was paused by a breakpoint. Try the Mocked filter, or open Map Local and Log Activity to see the same events.",
+                            "One call was answered by Map Local and one was paused by a breakpoint. Try the Mocked filter, or open Map Local and Log Dashboard to see the same events.",
                         )
                         .size(9.5)
                         .color(MUTED),
@@ -6019,6 +6092,25 @@ fn header_value(headers: &[(String, String)], key: &str) -> Option<String> {
         .map(|(_, v)| v.clone())
 }
 
+/// Ask macOS for a response fixture. The picker is optional: the editor also
+/// accepts a typed path, and a failed picker simply leaves the field alone.
+fn pick_local_fixture() -> Option<String> {
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg("POSIX path of (choose file with prompt \"Choose a response fixture\")")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
+    }
+}
+
 fn parse_headers(text: &str) -> Vec<(String, String)> {
     text.lines()
         .filter_map(|line| {
@@ -6517,6 +6609,7 @@ mod helper_tests {
             content_type: "application/json".into(),
             delay_ms: 0,
             body: success.into(),
+            local_file: String::new(),
             graphql_name: String::new(),
             enabled: true,
             hits: 0,
@@ -6754,18 +6847,25 @@ mod helper_tests {
         assert!(proxy_is_stale_with(&state, |_port| false));
 
         // Bind, note the port, then drop the listener: nothing answers there.
-        if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:0") {
-            if let Ok(addr) = listener.local_addr() {
-                let port = addr.port();
-                drop(listener);
-                let dead_state = WebProxyState {
-                    service: "Wi-Fi".to_string(),
-                    enabled: true,
-                    host: "127.0.0.1".to_string(),
-                    port,
-                };
-                assert!(!port_has_listener(port));
-                assert!(proxy_is_stale(&dead_state));
+        // Tests run in parallel, so another one may grab the freed port between
+        // the drop and the probe; retry a few fresh ports before giving up.
+        for _ in 0..8 {
+            if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:0") {
+                if let Ok(addr) = listener.local_addr() {
+                    let port = addr.port();
+                    drop(listener);
+                    if port_has_listener(port) {
+                        continue;
+                    }
+                    let dead_state = WebProxyState {
+                        service: "Wi-Fi".to_string(),
+                        enabled: true,
+                        host: "127.0.0.1".to_string(),
+                        port,
+                    };
+                    assert!(proxy_is_stale(&dead_state));
+                    return;
+                }
             }
         }
     }
@@ -6775,3 +6875,5 @@ include!("views.rs");
 include!("rules_ui.rs");
 include!("studio_ui.rs");
 include!("tour_ui.rs");
+include!("acp.rs");
+include!("acp_ui.rs");

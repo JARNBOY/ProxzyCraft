@@ -1,8 +1,8 @@
 # Brief
 
-**Question:** Why does a connected iOS Simulator show no traffic in the Proxzy POC, and how can the app prove capture works while also giving external IDE agents a real hook into the proxy engine?
+**Question:** How can a Proxyman-style desktop POC show live GraphQL and REST traffic with copy/share, repeat, Map Local (including a linked fixture file), Breakpoints and a Log Dashboard, so the person can learn how the pieces fit together?
 
-**Purpose:** Learning POC for the person: see how a Proxyman-style proxy, mock engine and agent-driven verification fit together, and get simulator traffic visible without unsafe system changes.
+**Purpose:** A learning POC for the person: inspect requests, copy a URL or cURL, repeat a call, answer an endpoint from Map Local, pause a real request at a breakpoint, and read one log dashboard for the session.
 
 **Targets:**
 - /Applications/Proxyman.app
@@ -13,4 +13,4 @@
 - Rust + eframe/egui; build must succeed and --screenshot must produce a non-blank PNG
 - Never change host macOS proxy settings without explicit confirmation
 
-**Done when:** A real request proves capture through the gate, the Mac route explains a silent simulator, full HTTPS catch is explicit and safe by default, IDE briefs are copyable, tests pass, screenshots are current, and rebuild_check reports it would pass.
+**Done when:** The app builds, draws a real window, captures or simulates GraphQL and REST calls, copies URL/cURL, repeats, serves Map Local from inline JSON or a linked file, pauses at request/response breakpoints, shows a log dashboard, passes its tests, and rebuild_check reports it would pass.

@@ -995,10 +995,11 @@ pub fn wiremock_mappings(rules: &[MapRule]) -> String {
             } else {
                 String::new()
             };
-            let json_body = if Json::parse(&rule.body).is_ok() {
-                rule.body.trim().to_string()
+            let served_body = rule.response_body();
+            let json_body = if Json::parse(&served_body).is_ok() {
+                served_body.trim().to_string()
             } else {
-                format!("\"{}\"", escape_json(&rule.body))
+                format!("\"{}\"", escape_json(&served_body))
             };
             format!(
                 "    {{\n      \"name\": \"{}\",\n      \"request\": {{{}\n        \"urlPattern\": \"{}\"\n      }},\n      \"response\": {{\n        \"status\": {},\n        \"headers\": {{ \"Content-Type\": \"{}\" }},{}\n        \"jsonBody\": {}\n      }}\n    }}",

@@ -19,6 +19,7 @@ enum TourArt {
     Logs,
     Agent,
     AgentHook,
+    Acp,
     Tests,
     Screen,
     Done,
@@ -92,7 +93,7 @@ const TOUR_STEPS: &[TourStep] = &[
                 "Click a row to pin it; Follow live jumps back to the newest call.",
                 "Run capture check proves one real request came through the gate.",
             ],
-            "Traffic → All Traffic",
+            "Traffic -> All Traffic",
             View::Traffic,
             TourArt::Traffic,
         )
@@ -125,7 +126,7 @@ const TOUR_STEPS: &[TourStep] = &[
                 "Responses keep the same JSON / Raw / XML / HTML switch.",
                 "After a send, choose a scenario slot and press Save Response as Mock.",
             ],
-            "Tools → Composer",
+            "Tools -> Composer",
             View::Composer,
             TourArt::Composer,
         )
@@ -140,7 +141,7 @@ const TOUR_STEPS: &[TourStep] = &[
                 "Switch a whole module in one click; Passthrough sends real traffic.",
                 "Inject a token or username without editing the base fixture.",
             ],
-            "Tools → Map Local",
+            "Tools -> Map Local",
             View::MapLocal,
             TourArt::MapLocal,
         )
@@ -155,7 +156,7 @@ const TOUR_STEPS: &[TourStep] = &[
                 "Edit method, URL, headers or body at the request stage.",
                 "Continue releases the call; Abort ends it.",
             ],
-            "Tools → Breakpoints",
+            "Tools -> Breakpoints",
             View::Breakpoints,
             TourArt::Breakpoint,
         )
@@ -170,7 +171,7 @@ const TOUR_STEPS: &[TourStep] = &[
                 "Copy summary gives a shareable session report.",
                 "The same events appear while a practice run is playing.",
             ],
-            "Monitor → Log Activity",
+            "Monitor -> Log Dashboard",
             View::Logs,
             TourArt::Logs,
         )
@@ -185,7 +186,7 @@ const TOUR_STEPS: &[TourStep] = &[
                 "The control-plane feed lists every /__proxzy/* call as it arrives.",
                 "Engine READY means the loopback control plane is listening.",
             ],
-            "Automation & agents → Agent Control",
+            "Automation & agents -> Agent Control",
             View::Agent,
             TourArt::Agent,
         )
@@ -201,9 +202,24 @@ const TOUR_STEPS: &[TourStep] = &[
                 "Copy check gives the agent one health command to run first.",
                 "Its request appears in the feed, so the result is verified.",
             ],
-            "Agent Control → Hook an IDE (scroll down)",
+            "Agent Control -> Hook an IDE (scroll down)",
             View::Agent,
             TourArt::AgentHook,
+        )
+    },
+    TourStep {
+        ..tour_step(
+            "ACP BRIDGE",
+            "The other half of the agent story",
+            "Agent Control and MCP show tools driving Proxzy. ACP is how an editor launches and supervises an AI coding agent in the first place.",
+            &[
+                "ACP links an editor to an agent; MCP links that agent to tools.",
+                "initialize -> session/new -> session/prompt, with updates and a permission gate.",
+                "The session lab is simulated; Proxzy still only sees the final HTTP request.",
+            ],
+            "Automation & agents -> ACP Bridge",
+            View::Acp,
+            TourArt::Acp,
         )
     },
     TourStep {
@@ -216,7 +232,7 @@ const TOUR_STEPS: &[TourStep] = &[
                 "Verdicts compare hit counts and response status.",
                 "Import or export the suite as JSON to share it.",
             ],
-            "Automation & agents → API Test Bench",
+            "Automation & agents -> API Test Bench",
             View::Tests,
             TourArt::Tests,
         )
@@ -231,7 +247,7 @@ const TOUR_STEPS: &[TourStep] = &[
                 "Export a play as JSON for a recording or a demo.",
                 "MCP and CLI agents can run the same steps.",
             ],
-            "Automation & agents → Screen Play & MCP",
+            "Automation & agents -> Screen Play & MCP",
             View::Screen,
             TourArt::Screen,
         )
@@ -246,7 +262,7 @@ const TOUR_STEPS: &[TourStep] = &[
                 "Guide & Stack explains certificates and device setup.",
                 "Nothing is locked behind an account or trial.",
             ],
-            "Tools → Guide & Stack",
+            "Tools -> Guide & Stack",
             View::Guide,
             TourArt::Done,
         )
@@ -345,6 +361,7 @@ impl App {
     fn tutorial_page(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         let mut start_tour: Option<usize> = None;
         let mut open_view: Option<View> = None;
+        let stop_count = TOUR_STEPS.len();
 
         ui.horizontal(|ui| {
             Self::studio_heading(
@@ -355,6 +372,9 @@ impl App {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if primary_button(ui, "Start the tour").clicked() {
                     start_tour = Some(0);
+                }
+                if secondary_button(ui, "Open ACP Bridge").clicked() {
+                    open_view = Some(View::Acp);
                 }
                 if secondary_button(ui, "Open Agent Control").clicked() {
                     open_view = Some(View::Agent);
@@ -389,7 +409,7 @@ impl App {
                                     ui.set_width(text_w);
                                     pill(
                                         ui,
-                                        "3-MINUTE GUIDED TOUR",
+                                        &format!("GUIDED TOUR · {} STOPS", stop_count),
                                         ACCENT,
                                         Color32::from_rgba_unmultiplied(88, 140, 255, 22),
                                     );
@@ -402,15 +422,21 @@ impl App {
                                     );
                                     ui.add_space(3.0);
                                     ui.label(
-                                        RichText::new(
-                                            "Twelve short stops. The app switches to each page, dims the background, and points at the part that matters. Traffic, Inspector, Composer, Map Local, Breakpoints, Logs, Agent Control, the IDE hook, Test Bench, Screen Play and the Guide.",
-                                        )
+                                        RichText::new(format!(
+                                            "{} short stops. The app switches to each page, dims the background, and points at the part that matters. Traffic, Inspector, Composer, Map Local, Breakpoints, Logs, Agent Control, the IDE hook, ACP Bridge, Test Bench, Screen Play and the Guide.",
+                                            stop_count
+                                        ))
                                         .size(11.5)
                                         .color(MUTED),
                                     );
                                     ui.add_space(10.0);
                                     ui.horizontal(|ui| {
-                                        if primary_button(ui, "Start the 12-stop tour").clicked() {
+                                        if primary_button(
+                                            ui,
+                                            &format!("Start the {}-stop tour", stop_count),
+                                        )
+                                        .clicked()
+                                        {
                                             start_tour = Some(0);
                                         }
                                         if secondary_button(ui, "Can't find Agent? Show me").clicked()
@@ -426,7 +452,7 @@ impl App {
                                 Layout::top_down(Align::Min),
                                 |ui| {
                                     ui.set_width(art_w);
-                                    tour_sidebar_sketch(ui, Vec2::new(art_w, 178.0));
+                                    tour_sidebar_sketch(ui, Vec2::new(art_w, 190.0));
                                 },
                             );
                         });
@@ -469,7 +495,7 @@ impl App {
                                 );
                                 ui.label(
                                     RichText::new(
-                                        "It is not inside Live Capture. Look at the left rail: Automation & agents → Agent Control. It is now above Tools so it stays visible.",
+                                        "It is not inside Live Capture. Look at the left rail: Automation & agents -> Agent Control. ACP Bridge, API Test Bench and Screen Play live in the same group.",
                                     )
                                     .size(10.5)
                                     .color(MUTED),
@@ -496,7 +522,9 @@ impl App {
                 );
                 ui.add_space(6.0);
                 let gap = 12.0;
-                let card_w = ((ui.available_width() - gap * 2.0) / 3.0).max(280.0);
+                let spacing = ui.spacing().item_spacing.x;
+                let card_w =
+                    ((ui.available_width() - gap * 2.0 - spacing * 4.0) / 3.0).max(280.0);
                 ui.horizontal_top(|ui| {
                     tour_group_card(
                         ui,
@@ -523,7 +551,7 @@ impl App {
                         &[
                             ("Map Local", "Success / Error / Empty scenarios"),
                             ("Breakpoints", "Pause, edit, Continue or Abort"),
-                            ("Log Activity", "One timeline and session summary"),
+                            ("Log Dashboard", "One timeline and session summary"),
                         ],
                         &mut start_tour,
                         &mut open_view,
@@ -538,6 +566,7 @@ impl App {
                         GREEN,
                         &[
                             ("Agent Control", "Control plane, scenarios, injection"),
+                            ("ACP Bridge", "Editor-to-agent handshake and permissions"),
                             ("API Test Bench", "Run saved requests with verdicts"),
                             ("Screen Play & MCP", "Scripted engine + device steps"),
                         ],
@@ -659,6 +688,7 @@ impl App {
                                     TourArt::Agent | TourArt::AgentHook => {
                                         ("AGENT CONTROL", GREEN)
                                     }
+                                    TourArt::Acp => ("AGENT PROTOCOL", CYAN),
                                     TourArt::Done => ("FINISH", GREEN),
                                     TourArt::Breakpoint => ("INTERCEPT", AMBER),
                                     TourArt::MapLocal | TourArt::Composer => ("MOCK", AMBER),
@@ -759,7 +789,7 @@ impl App {
                                 }
                                 ui.add_space(8.0);
                                 ui.horizontal(|ui| {
-                                    // 12 progress dots.
+                                    // One dot per stop.
                                     for i in 0..TOUR_STEPS.len() {
                                         let color = if i == index {
                                             ACCENT
@@ -888,7 +918,7 @@ fn tour_group_card(
 }
 
 /// A tiny sidebar drawing for the Tutorial hero. It deliberately shows the
-/// three rail sections and highlights Automation & agents → Agent Control.
+/// three rail sections and highlights Automation & agents -> Agent Control.
 fn tour_sidebar_sketch(ui: &mut Ui, size: Vec2) {
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let p = ui.painter();
@@ -977,11 +1007,12 @@ fn tour_sidebar_sketch(ui: &mut Ui, size: Vec2) {
         AMBER,
     );
     row(rect.top() + 146.0, "Agent Control", true);
+    row(rect.top() + 161.0, "ACP Bridge", false);
 
     p.text(
         egui::pos2(rect.left() + 14.0, rect.bottom() - 12.0),
         Align2::LEFT_CENTER,
-        "Monitor · Log Activity · Tools · Mocks",
+        "Monitor · Tools · Guide",
         FontId::proportional(6.8),
         FAINT,
     );
@@ -1038,8 +1069,9 @@ fn tour_art(ui: &mut Ui, art: TourArt, size: Vec2) {
         TourArt::Breakpoint => 3,
         TourArt::Logs => 4,
         TourArt::Agent | TourArt::AgentHook => 5,
-        TourArt::Tests => 6,
-        TourArt::Screen => 7,
+        TourArt::Acp => 6,
+        TourArt::Tests => 7,
+        TourArt::Screen => 8,
         _ => 9,
     };
     for i in 0..9 {
@@ -1480,7 +1512,7 @@ fn tour_art(ui: &mut Ui, art: TourArt, size: Vec2) {
             p.text(
                 egui::pos2(x, y + 2.0),
                 Align2::LEFT_CENTER,
-                "Log Activity",
+                "Log Dashboard",
                 FontId::proportional(8.0),
                 TEXT,
             );
@@ -1696,6 +1728,116 @@ fn tour_art(ui: &mut Ui, art: TourArt, size: Vec2) {
                 GREEN,
             );
         }
+        TourArt::Acp => {
+            p.text(
+                egui::pos2(x, y + 2.0),
+                Align2::LEFT_CENTER,
+                "ACP Bridge",
+                FontId::proportional(8.0),
+                TEXT,
+            );
+            let gap = 18.0;
+            let box_w = (w - gap) / 2.0;
+            let editor = Rect::from_min_size(
+                egui::pos2(x, y + 14.0),
+                Vec2::new(box_w, 30.0),
+            );
+            let agent = Rect::from_min_size(
+                egui::pos2(x + box_w + gap, y + 14.0),
+                Vec2::new(box_w, 30.0),
+            );
+            for (r, label, sub, color) in [
+                (editor, "EDITOR", "the client", ACCENT),
+                (agent, "AGENT", "does the work", GREEN),
+            ] {
+                p.rect_filled(r, 4.0, CARD);
+                p.rect_stroke(r, 4.0, Stroke::new(1.0, color));
+                p.text(
+                    egui::pos2(r.center().x, r.center().y - 4.0),
+                    Align2::CENTER_CENTER,
+                    label,
+                    FontId::proportional(6.2),
+                    color,
+                );
+                p.text(
+                    egui::pos2(r.center().x, r.center().y + 6.0),
+                    Align2::CENTER_CENTER,
+                    sub,
+                    FontId::proportional(4.8),
+                    FAINT,
+                );
+            }
+            let mid_x = editor.right() + gap * 0.5;
+            p.text(
+                egui::pos2(mid_x, y + 25.0),
+                Align2::CENTER_CENTER,
+                "ACP",
+                FontId::monospace(4.8),
+                CYAN,
+            );
+            p.line_segment(
+                [
+                    egui::pos2(editor.right() + 1.0, y + 37.0),
+                    egui::pos2(agent.left() - 1.0, y + 37.0),
+                ],
+                Stroke::new(1.0, CYAN),
+            );
+
+            let rows = [
+                ("initialize", "C -> A", ACCENT),
+                ("session/new", "C -> A", ACCENT),
+                ("session/prompt", "C -> A", ACCENT),
+                ("request_permission", "A -> C", AMBER),
+                ("end_turn", "A -> C", GREEN),
+            ];
+            for (i, (method, direction, color)) in rows.iter().enumerate() {
+                let ry = y + 50.0 + i as f32 * 12.0;
+                let row = Rect::from_min_size(
+                    egui::pos2(x, ry),
+                    Vec2::new(w, 10.0),
+                );
+                p.rect_filled(
+                    row,
+                    2.5,
+                    if *color == AMBER {
+                        Color32::from_rgba_unmultiplied(255, 181, 84, 26)
+                    } else {
+                        CARD
+                    },
+                );
+                if *color == AMBER {
+                    p.rect_stroke(row, 2.5, Stroke::new(1.0, AMBER));
+                }
+                p.text(
+                    egui::pos2(row.left() + 5.0, row.center().y),
+                    Align2::LEFT_CENTER,
+                    *method,
+                    FontId::monospace(4.9),
+                    *color,
+                );
+                p.text(
+                    egui::pos2(row.right() - 5.0, row.center().y),
+                    Align2::RIGHT_CENTER,
+                    *direction,
+                    FontId::monospace(4.3),
+                    FAINT,
+                );
+            }
+            p.text(
+                egui::pos2(x, y + 116.0),
+                Align2::LEFT_CENTER,
+                "JSON-RPC 2.0 over stdio",
+                FontId::monospace(4.9),
+                CYAN,
+            );
+            p.text(
+                egui::pos2(x, y + 126.0),
+                Align2::LEFT_CENTER,
+                "Proxzy sees the HTTP call after the gate.",
+                FontId::proportional(5.2),
+                MUTED,
+            );
+        }
         TourArt::Tests => {
             p.text(
                 egui::pos2(x, y + 2.0),
@@ -1895,6 +2037,7 @@ mod tour_tests {
             View::Breakpoints,
             View::Logs,
             View::Agent,
+            View::Acp,
             View::Tests,
             View::Screen,
             View::Guide,
@@ -1916,6 +2059,16 @@ mod tour_tests {
         assert_eq!(TOUR_STEPS[hook].view, View::Agent);
         assert!(TOUR_STEPS[hook].agent_hook);
         assert_eq!(hook, agent + 1);
+    }
+
+    #[test]
+    fn acp_bridge_follows_the_ide_hook() {
+        let hook = tour_index_for_art(TourArt::AgentHook);
+        let acp = tour_index_for(View::Acp);
+        assert_eq!(TOUR_STEPS[acp].art, TourArt::Acp);
+        assert!(TOUR_STEPS[acp].where_to.contains("Automation"));
+        assert_eq!(acp, hook + 1);
+        assert_eq!(TOUR_STEPS[acp + 1].view, View::Tests);
     }
 
     #[test]

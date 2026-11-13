@@ -550,13 +550,13 @@ impl App {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
                 ui.label(
-                    RichText::new("Log Activity")
+                    RichText::new("Log Dashboard")
                         .size(24.0)
                         .strong()
                         .color(TEXT),
                 );
                 ui.label(
-                    RichText::new("Dashboard for traffic, rule hits and breakpoint events.")
+                    RichText::new("Traffic, mock hits and breakpoint events in one timeline.")
                         .size(11.5)
                         .color(MUTED),
                 );
@@ -1230,7 +1230,7 @@ impl App {
                                 ui,
                                 "Log dashboard",
                                 "One timeline for captures, mock hits, breakpoint edits and system events.",
-                                "Open Log Activity; filter by Info, Warn or Error, and copy the session summary.",
+                                "Open Log Dashboard; filter by Info, Warn or Error, and copy the session summary.",
                                 CYAN,
                             );
                         },
@@ -1287,7 +1287,7 @@ impl App {
                             "Create a Map Local rule for the GraphQL endpoint and compare the mocked capture with a live send.",
                             "Pause a request, change one JSON field, Continue, then open Request to see the edit.",
                             "Send a REST request to a public test API in Composer and inspect the real headers.",
-                            "Filter the traffic list to Errors, then follow the timeline in Log Activity.",
+                            "Filter the traffic list to Errors, then follow the timeline in Log Dashboard.",
                         ] {
                             ui.horizontal(|ui| {
                                 dot(ui, FAINT, 5.0);
@@ -3383,6 +3383,7 @@ impl eframe::App for App {
         self.poll_proxy(ctx);
         self.poll_tests(ctx);
         self.advance_screen_run(ctx);
+        self.poll_acp(ctx);
         self.poll_capture_check(ctx);
         self.poll_practice(ctx);
         self.poll_sim_reboot(ctx);
@@ -3525,6 +3526,17 @@ impl eframe::App for App {
                     )
                     .show(ctx, |ui| {
                         self.screen_page(ui, ctx);
+                    });
+            }
+            View::Acp => {
+                egui::CentralPanel::default()
+                    .frame(
+                        Frame::none()
+                            .fill(BG)
+                            .inner_margin(Margin::symmetric(20.0, 16.0)),
+                    )
+                    .show(ctx, |ui| {
+                        self.acp_page(ui, ctx);
                     });
             }
             View::Guide => {

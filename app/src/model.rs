@@ -1900,6 +1900,10 @@ pub struct MapRule {
     pub content_type: String,
     pub delay_ms: u64,
     pub body: String,
+    /// Optional path to a response fixture on disk. When set and readable,
+    /// the proxy answers with the file contents instead of `body`, so editing
+    /// the fixture changes the mock without saving the rule again.
+    pub local_file: String,
     pub graphql_name: String,
     pub enabled: bool,
     pub hits: u32,
@@ -1928,6 +1932,7 @@ impl Default for MapRule {
             content_type: "application/json".into(),
             delay_ms: 20,
             body: success_body.clone(),
+            local_file: String::new(),
             graphql_name: String::new(),
             enabled: true,
             hits: 0,
@@ -1959,10 +1964,14 @@ impl MapRule {
     /// 1. Replaces `{{KEY}}`, `{{key}}`, `{{Key}}` placeholders from `inject_props`
     /// 2. Replaces direct JSON key values if present
     pub fn render_injected_body(&self) -> String {
+        self.render_injected_text(&self.body)
+    }
+
+    fn render_injected_text(&self, body: &str) -> String {
         if self.inject_props.is_empty() {
-            return self.body.clone();
+            return body.to_string();
         }
-        let mut rendered = self.body.clone();
+        let mut rendered = body.to_string();
         for (k, v) in &self.inject_props {
             let upper = format!("{{{{{}}}}}", k.to_ascii_uppercase());
             let lower = format!("{{{{{}}}}}", k.to_ascii_lowercase());
@@ -1991,6 +2000,32 @@ impl MapRule {
             }
         }
         rendered
+    }
+
+    /// The path to a linked local fixture, if one was set.
+    pub fn local_file_path(&self) -> Option<&str> {
+        let trimmed = self.local_file.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    }
+
+    /// Read the linked fixture. Returns None when no file is linked or when
+    /// the file cannot be read (the caller falls back to the inline body).
+    pub fn local_file_content(&self) -> Option<String> {
+        self.local_file_path()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+    }
+
+    /// The body the proxy should actually send: the linked file when it is
+    /// readable, otherwise the inline body with dynamic injections applied.
+    pub fn response_body(&self) -> String {
+        match self.local_file_content() {
+            Some(content) => self.render_injected_text(&content),
+            None => self.render_injected_body(),
+        }
     }
 
     pub fn matches(&self, method: &str, url: &str, body: &str) -> bool {
@@ -2216,6 +2251,38 @@ impl TestSession {
             self.additive_drifts += call.additive_changes_count;
         }
         self.audit_log.push(call);
+    }
+}
+
+/// Guess a response content type from a local fixture's extension.
+pub fn content_type_for_path(path: &str) -> &'static str {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "html" | "htm" => "text/html; charset=utf-8",
+        "txt" => "text/plain; charset=utf-8",
+        "js" => "application/javascript",
+        "css" => "text/css",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
+pub fn human_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
     }
 }
 
@@ -2781,6 +2848,35 @@ mod rule_tests {
         assert!(rendered.contains("0812345678"));
         assert!(rendered.contains("111111"));
         assert!(rendered.contains("vip"));
+    }
+
+    #[test]
+    fn local_file_fixture_wins_and_falls_back_to_inline_body() {
+        let path = std::env::temp_dir().join(format!(
+            "proxzy-fixture-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, r#"{"source":"file","token":"{{TOKEN}}"}"#).unwrap();
+        let mut rule = MapRule {
+            body: r#"{"source":"inline"}"#.into(),
+            local_file: path.display().to_string(),
+            ..MapRule::default()
+        };
+        assert_eq!(rule.local_file_path(), Some(path.to_str().unwrap()));
+        assert_eq!(rule.response_body(), r#"{"source":"file","token":"{{TOKEN}}"}"#);
+        rule.inject_props.insert("TOKEN".into(), "abc123".into());
+        assert_eq!(rule.response_body(), r#"{"source":"file","token":"abc123"}"#);
+
+        std::fs::remove_file(&path).ok();
+        rule.local_file = path.display().to_string();
+        assert_eq!(rule.response_body(), r#"{"source":"inline"}"#);
+        assert_eq!(content_type_for_path("fixture.json"), "application/json");
+        assert_eq!(content_type_for_path("fixture.xml"), "application/xml");
+        assert_eq!(content_type_for_path("fixture.bin"), "application/octet-stream");
     }
 
     #[test]

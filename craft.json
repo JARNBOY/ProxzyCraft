@@ -8,9 +8,9 @@
   },
   "stack": "Rust + egui (eframe)",
   "status": "ready",
-  "note": "Ready: all 2 checks pass. 4 questions about the original are still open.",
+  "note": "Ready: all 2 checks pass. 6 questions about the original are still open.",
   "created_ms": 1794210119144,
-  "updated_ms": 1794491013036,
+  "updated_ms": 1794545202511,
   "checks": [
     {
       "round": 1,
@@ -211,12 +211,52 @@
         "checks/round-10/screenshot.png"
       ],
       "at_ms": 1794491013025
+    },
+    {
+      "round": 11,
+      "check": "build",
+      "passed": true,
+      "similarity": null,
+      "note": "Build succeeded.",
+      "artifacts": [],
+      "at_ms": 1794539395483
+    },
+    {
+      "round": 11,
+      "check": "app-screenshot",
+      "passed": true,
+      "similarity": null,
+      "note": "The program starts and draws (2880×1668).",
+      "artifacts": [
+        "checks/round-11/screenshot.png"
+      ],
+      "at_ms": 1794539396910
+    },
+    {
+      "round": 12,
+      "check": "build",
+      "passed": true,
+      "similarity": null,
+      "note": "Build succeeded.",
+      "artifacts": [],
+      "at_ms": 1794545195764
+    },
+    {
+      "round": 12,
+      "check": "app-screenshot",
+      "passed": true,
+      "similarity": null,
+      "note": "The program starts and draws (2880×1666).",
+      "artifacts": [
+        "checks/round-12/screenshot.png"
+      ],
+      "at_ms": 1794545199869
     }
   ],
   "agent_session": null,
   "agent_session_by": "opencode",
   "allowed_actions": [],
-  "last_reply": "I'll start by studying the evidence README and checking the workspace structure.The Proxzy network inspector is finished: it captures and inspects HTTP/HTTPS traffic, repeats requests, composes GraphQL and REST calls, mocks responses locally, pauses at breakpoints, and records everything in the activity log. I also fixed the sidebar so a short window can no longer hide screens, with a visible scrollbar, a “more screens below” cue, and a pinned all-features list. The final build passes all sixty-seven tests, produces a clean full-size screenshot, and the rebuild check reports it would pass. What remains unknown is only the original app’s exact visual detail and onboarding, which cannot be inspected under the clean-room rule; this build is an original interpretation rather than a pixel match. A good next step would be to connect a real device and confirm captured traffic end to end.",
+  "last_reply": "I'll start by looking at the evidence the workspace gives me and the current state of the investigation.The workspace already contains a working POC from earlier turns, and this request adds a new topic — an ACP/MCP agent plugin concept and a tutorial update. Let me look at what the app has now.The app already has an \"agent\" screen and a tutorial. Let me read the source around those to see what's there and what ACP content is missing.The attached pictures show the current app; the new work is the ACP concept and tutorial update. Let me map how a new screen plugs into navigation and the tutorial before writing code.I'll verify the ACP protocol details against its public documentation so the tutorial teaches the real method names, not invented ones.The ACP docs confirm the exact method flow. I'll build a dedicated ACP concept screen that plugs into the existing agent tooling, then extend the tour and fix its stop counts.Now I'll add the ACP concept model with accurate JSON-RPC messages, a permission gate and copy-ready setup text.Now I'll update the tutorial with the ACP stop, artwork, dynamic counts, and links.All 75 tests pass. Now I'll build and capture the ACP screen to inspect the layout.The screenshots reveal the default font can't render `→`/`↔` glyphs (they show as boxes). I'll switch the tutorial and ACP text to ASCII arrows.Implemented the ACP concept feature and tutorial update.\n\n**What changed**\n- Added **ACP Bridge** under *Automation & agents*, with a clear editor -> agent -> MCP tools -> Proxzy flow.\n- Built an interactive 11-message ACP v1 session lab (`initialize`, `session/new`, `session/prompt`, updates, permission request, `stopReason`).\n- Added a working permission gate with **Allow once**, **Always allow**, and **Reject**, including the correct stopped/refused outcome.\n- Added copy-ready **Editor config**, **MCP entry**, and **Agent prompt** templates.\n- Linked ACP Bridge from **Agent Control** and **Screen Play & MCP**.\n- Updated the tutorial to a **13-stop tour** with a dedicated ACP stop and matching illustration.\n- Documented the concept, demo triggers, and real-vs-simulated boundary.\n\n**Verification**\n- `cargo test`: **75 passed, 0 failed**\n- Build: clean, no warnings\n- Screenshots captured for the ACP page (pending, allowed, rejected), tutorial, tour, Agent Control, and Screen Play\n- `rebuild_check`: **would pass**\n\nThe ACP Bridge now sits beside Agent Control so you can see the other half of the agent story: how an editor starts and supervises an AI agent in the first place. It walks through a realistic session, pauses before a side effect, and lets you approve or reject it. The screen is a learning simulation rather than a live connection, and it clearly separates ACP from MCP so the two are not confused. The tutorial now includes this stop, so the guided tour covers the full setup from editor to tools.",
   "asset_budget_usd": 5.0,
   "generate_assets": false,
   "builder": "OpenCode",

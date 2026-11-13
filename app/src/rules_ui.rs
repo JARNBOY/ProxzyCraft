@@ -531,6 +531,17 @@ impl App {
                                             ui.with_layout(
                                                 Layout::right_to_left(Align::Center),
                                                 |ui| {
+                                                    if let Some(path) = rule.local_file_path() {
+                                                        pill(
+                                                            ui,
+                                                            "LOCAL FILE",
+                                                            GREEN,
+                                                            Color32::from_rgba_unmultiplied(
+                                                                61, 214, 149, 18,
+                                                            ),
+                                                        )
+                                                        .on_hover_text(path);
+                                                    }
                                                     let fixture = rule.fixture_path();
                                                     let resp = ui.add(
                                                         egui::Label::new(
@@ -1432,6 +1443,7 @@ impl App {
         let mut save = false;
         let mut cancel = false;
         let mut jump_response = false;
+        let mut file_error: Option<String> = None;
 
         egui::Area::new(Id::new("map_editor_dim"))
             .order(egui::Order::Middle)
@@ -1748,21 +1760,103 @@ impl App {
                                             });
                                         });
                                     });
-                                    ui.add_space(7.0);
-                                    form_label(ui, "GraphQL query name (optional)");
-                                    input_frame().show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        ui.add(
-                                            egui::TextEdit::singleline(&mut ed.graphql_name)
-                                                .frame(false)
-                                                .desired_width(f32::INFINITY)
-                                                .font(TextStyle::Monospace)
-                                                .text_color(TEXT)
-                                                .hint_text("GetProducts — leave blank for any operation"),
-                                        );
+                                    ui.add_space(8.0);
+                                    section_label(ui, "GraphQL filter & local fixture");
+                                    ui.add_space(3.0);
+                                    ui.horizontal(|ui| {
+                                        ui.vertical(|ui| {
+                                            ui.set_width(260.0);
+                                            form_label(ui, "GraphQL query name (optional)");
+                                            input_frame().show(ui, |ui| {
+                                                ui.set_width(260.0);
+                                                ui.add(
+                                                    egui::TextEdit::singleline(&mut ed.graphql_name)
+                                                        .frame(false)
+                                                        .desired_width(256.0)
+                                                        .font(TextStyle::Monospace)
+                                                        .text_color(TEXT)
+                                                        .hint_text("GetProducts"),
+                                                );
+                                            });
+                                        });
+                                        ui.vertical(|ui| {
+                                            ui.set_width(320.0);
+                                            form_label(ui, "Local file (optional)");
+                                            input_frame().show(ui, |ui| {
+                                                ui.set_width(320.0);
+                                                ui.add(
+                                                    egui::TextEdit::singleline(&mut ed.local_file)
+                                                        .frame(false)
+                                                        .desired_width(316.0)
+                                                        .font(TextStyle::Monospace)
+                                                        .text_color(TEXT)
+                                                        .hint_text("/Users/you/fixtures/products.json"),
+                                                );
+                                            });
+                                        });
+                                        ui.vertical(|ui| {
+                                            ui.set_width(120.0);
+                                            ui.add_space(17.0);
+                                            ui.horizontal(|ui| {
+                                                if secondary_button(ui, "Browse").clicked() {
+                                                    if let Some(path) = pick_local_fixture() {
+                                                        ed.local_file = path;
+                                                        if let Err(e) = ed.load_local_file() {
+                                                            file_error = Some(e);
+                                                        }
+                                                    }
+                                                }
+                                                if secondary_button(ui, "Load").clicked() {
+                                                    if let Err(e) = ed.load_local_file() {
+                                                        file_error = Some(e);
+                                                    }
+                                                }
+                                            });
+                                        });
                                     });
+                                    ui.add_space(3.0);
+                                    let linked = ed.local_file.trim();
+                                    if linked.is_empty() {
+                                        ui.label(
+                                            RichText::new("Leave the file blank to answer with the inline body below.")
+                                                .size(9.5)
+                                                .color(FAINT),
+                                        );
+                                    } else {
+                                        match std::fs::metadata(linked) {
+                                            Ok(meta) => {
+                                                ui.horizontal(|ui| {
+                                                    dot(ui, GREEN, 6.0);
+                                                    ui.label(
+                                                        RichText::new(format!(
+                                                            "Linked · {} · read on every request, so editing the file changes the answer",
+                                                            human_size(meta.len())
+                                                        ))
+                                                        .size(9.5)
+                                                        .color(GREEN),
+                                                    );
+                                                    if secondary_button(ui, "Clear link").clicked() {
+                                                        ed.local_file.clear();
+                                                    }
+                                                });
+                                            }
+                                            Err(_) => {
+                                                ui.horizontal(|ui| {
+                                                    dot(ui, AMBER, 6.0);
+                                                    ui.label(
+                                                        RichText::new("File not found — the inline body is used until the path is readable.")
+                                                            .size(9.5)
+                                                            .color(AMBER),
+                                                    );
+                                                    if secondary_button(ui, "Clear link").clicked() {
+                                                        ed.local_file.clear();
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    }
 
-                                    ui.add_space(10.0);
+                                    ui.add_space(8.0);
                                     section_label(ui, "Response & Multi-Scenario Presets (Success / Error / Empty)");
                                     ui.add_space(4.0);
                                     ui.horizontal(|ui| {
@@ -1864,6 +1958,9 @@ impl App {
             self.save_map_editor(ctx);
         } else if cancel {
             self.map_editor = None;
+        }
+        if let Some(message) = file_error {
+            self.toast_now(ctx, &message);
         }
     }
 

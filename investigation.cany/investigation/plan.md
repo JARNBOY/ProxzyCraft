@@ -1,8 +1,8 @@
 # Plan
 
-1. [done] Check the current app still builds and opens — A stale build would hide the screens the person expects.
-2. [done] Make every screen findable when the window is short — The rail now scrolls, shows a solid scrollbar and a clickable overflow cue, and the All features list stays pinned.
-3. [done] Take fresh pictures of the main screens — The person should see the current build, not an older screenshot.
-4. [done] Run the app's automatic tests — Mocking, breakpoints and the proxy must keep working, not just look right.
-5. [done] Compare with the original and settle what one more look can — The two open questions are answered from the current build; original-only details remain blocked by the clean-room rule.
-6. [done] Run rebuild_check on the final build — Build and 2880x1670 screenshot pass; the report says this would pass.
+1. [done] Check what the app already does — The app already had Agent Control, MCP snippets and a 12-stop tour; the ACP gap is now filled.
+2. [done] Learn the real ACP handshake — Public ACP docs fixed the method names, message shapes and permission flow.
+3. [done] Build the ACP Bridge screen — The screen has an interactive session lab, permission gate, protocol checks and copy-ready setup.
+4. [done] Connect ACP to the agent tools — Agent Control and Screen Play now link to ACP Bridge, and the sidebar/palette expose it.
+5. [done] Update the tutorial and counts — The tour now has 13 stops, an ACP stop with its own art, and dynamic counts; tests cover it.
+6. [done] Build, test and check the picture — 75 tests pass, the build is clean, screenshots were recaptured and rebuild_check says it would pass.
