@@ -1,0 +1,179 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: Full v1.0.0 Regression Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify tag matches package version (when semver tag)
+        shell: bash
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME}"
+          CARGO_VERSION="$(awk '/^\[package\]/{p=1;next}/^\[/{p=0}p&&/^version[[:space:]]*=/{gsub(/^version[[:space:]]*=[[:space:]]*"/,"");gsub(/".*$/,"");print;exit}' app/Cargo.toml)"
+          if [[ "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$TAG_NAME" != "v$CARGO_VERSION" ]]; then
+            echo "ERROR: Tag $TAG_NAME does not match app/Cargo.toml version $CARGO_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libx11-dev libxkbcommon-dev libwayland-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install @proxzy/client TypeScript tooling
+        run: npm --prefix packages/proxzy-client install --no-package-lock --ignore-scripts
+
+      - name: Run full v1.0.0 regression gate
+        run: ./scripts/regression-v1.sh
+
+  build:
+    name: Build (${{ matrix.label }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: tar.gz
+            bin: proxzy
+          - label: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            ext: tar.gz
+            bin: proxzy
+          - label: macos-x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            ext: tar.gz
+            bin: proxzy
+          - label: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: zip
+            bin: proxzy.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libx11-dev libxkbcommon-dev libwayland-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev
+
+      - name: Export Clean Release source tree
+        shell: bash
+        run: ./scripts/export-clean-release.sh --orphan --dest clean-src --tag "${GITHUB_REF_NAME}"
+
+      - name: Install Rust toolchain (${{ matrix.target }})
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clean-src
+
+      - name: Build release binary from Clean Release tree
+        shell: bash
+        run: cargo build --release --manifest-path clean-src/app/Cargo.toml --target "${{ matrix.target }}"
+
+      - name: Package release archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          STAGE="stage-${{ matrix.label }}"
+          ARCHIVE="proxzy-${GITHUB_REF_NAME}-${{ matrix.label }}.tar.gz"
+          mkdir -p "$STAGE" dist
+          cp "clean-src/target/${{ matrix.target }}/release/${{ matrix.bin }}" "$STAGE/"
+          cp clean-src/README.md clean-src/LICENSE clean-src/THIRD_PARTY_NOTICES.md clean-src/PRIVACY.md "$STAGE/"
+          tar -czf "dist/$ARCHIVE" -C "$STAGE" .
+
+      - name: Package release archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = "stage-${{ matrix.label }}"
+          $archive = "proxzy-${env:GITHUB_REF_NAME}-${{ matrix.label }}.zip"
+          New-Item -ItemType Directory -Force -Path $stage, "dist" | Out-Null
+          Copy-Item "clean-src/target/${{ matrix.target }}/release/${{ matrix.bin }}" "$stage/"
+          Copy-Item "clean-src/README.md", "clean-src/LICENSE", "clean-src/THIRD_PARTY_NOTICES.md", "clean-src/PRIVACY.md" "$stage/"
+          Compress-Archive -Path "$stage/*" -DestinationPath "dist/$archive" -Force
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.label }}
+          path: dist/*
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download built archives
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: dist-*
+          merge-multiple: true
+
+      - name: Package clean-room source archive
+        shell: bash
+        run: |
+          ./scripts/export-clean-release.sh --orphan --dest clean-src --tag "${GITHUB_REF_NAME}"
+          tar --exclude=.git -czf "artifacts/proxzy-${GITHUB_REF_NAME}-clean-source.tar.gz" -C clean-src .
+
+      - name: Generate SHA256SUMS.txt
+        shell: bash
+        run: |
+          cd artifacts
+          sha256sum proxzy-* | sort > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          body: |
+            ## ProxzyCraft ${{ github.ref_name }} (Unsigned Open-Source Release)
+
+            > **Unsigned Binary Notice:** These binaries are built transparently from the Clean Release source tree on GitHub Actions under the MIT license without paid Apple Developer notarization or Windows Authenticode certificates.
+            >
+            > - **macOS Gatekeeper:** Run `xattr -dr com.apple.quarantine ./proxzy` after extracting (or build from source via `cargo build --release --manifest-path app/Cargo.toml`).
+            > - **Windows SmartScreen:** Choose *More info -> Run anyway* if prompted, or build from source.
+            > - **Checksums:** Verify archive integrity against `SHA256SUMS.txt` (`sha256sum -c SHA256SUMS.txt`).
