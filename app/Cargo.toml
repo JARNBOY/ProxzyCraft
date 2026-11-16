@@ -1,6 +1,6 @@
 [package]
 name = "proxzy"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 description = "Cross-platform local HTTP/1.1 & HTTPS MITM proxy and E2E API scenario engine for desktop browsers, simulators, and physical mobile devices."

@@ -1,261 +1,284 @@
-# ProxzyCraft &mdash; Safe Native Network Inspector &amp; Autonomous Mobile E2E Mock Engine
+# ProxzyCraft v1.0.0 &mdash; Safe Native Network Inspector &amp; Autonomous E2E Mock Engine
 
+[![Release](https://img.shields.io/badge/version-v1.0.0-blue.svg?style=flat-square)](app/Cargo.toml)
 [![Rust](https://img.shields.io/badge/language-Rust_2021-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![Tokio](https://img.shields.io/badge/async-Tokio_1-blue.svg?style=flat-square)](https://tokio.rs)
 [![egui](https://img.shields.io/badge/gui-egui_0.29-lightgrey.svg?style=flat-square)](https://github.com/emilk/egui)
 [![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
-[![Zero Cloud](https://img.shields.io/badge/privacy-100%25_local-success.svg?style=flat-square)](#privacy--security)
+[![Zero Cloud](https://img.shields.io/badge/privacy-100%25_local-success.svg?style=flat-square)](PRIVACY.md)
 
-**ProxzyCraft** is an open-source, pure-Rust HTTP/1.1 &amp; HTTPS MITM proxy engineered for two critical use cases:
-1. **Daily Developer &amp; QA Debugger (Like Proxyman / Charles):** A native Cupertino dark-mode desktop GUI (`egui`) with deep request/response inspection, 3-scenario Map Local mocking, request breakpoints, and a cURL Composer.
-2. **Autonomous SDLC E2E Engine (Like WireMock for Mobile):** A headless, zero-latency in-band control plane (`127.0.0.1:9090/__proxzy/*`) that automates mobile UI testing with **MobileWright**, **`mobile-mcp`**, **Playwright**, **Appium**, and AI coding agents.
+**ProxzyCraft** is a free, zero-telemetry, pure-Rust HTTP/1.1 &amp; HTTPS MITM proxy and deterministic E2E API scenario engine built for:
+1. **Desktop &amp; Mobile Debugging:** A native Cupertino dark-mode GUI (`egui`) with an **Isolated Browser Session** launcher (zero system-wide proxy or keychain mutations), iOS Simulator / Android Emulator auto-detection, request breakpoints, a REST/GraphQL Composer, and a 3-scenario Map Local mock engine.
+2. **Autonomous SDLC &amp; AI Agent E2E:** A headless, zero-latency in-band Control Plane (`127.0.0.1:9090/__proxzy/*`) and zero-dependency TypeScript client (`@proxzy/client` v1.0.0) for **MobileWright**, **`mobile-mcp`**, **Playwright**, **Appium**, **XCTest**, **Espresso**, and AI coding agents (Cursor, VS Code, Claude Code, JetBrains).
 
-Nothing is locked behind accounts, trials, telemetry, or paid tiers &mdash; 100% free and open-source under the MIT license.
-
----
-
-## 🌟 Key Highlights
-
-* **Dual-Mode Execution:** Run the native desktop GUI with `cargo run` or start a lightweight headless daemon with `proxzy --headless`.
-* **Auto-Catch Live 200 OK (Zero-Mock Cold Start):** When starting tests for a new app without existing mock data, ProxzyCraft intercepts live 200 responses from trusted backends, scrubs PII/tokens, derives empty states, and caches them as mock fixtures for instant offline replay.
-* **3-Scenario Map Local State Machine:** Every mock stores `Success (200)`, `Error (500)`, and `Empty (200)` scenario slots. Switch scenarios in **1 click** in the GUI or via `POST /__proxzy/scenario`.
-* **Automatic Security &amp; PII Redaction:** Authorization headers, bearer tokens, passwords, 10-digit phone numbers, and citizen IDs are automatically scrubbed and replaced with safe template placeholders (`{{TOKEN}}`, `{{USERNAME}}`, `{{OTP}}`).
-* **Testcase-Scoped Session Audits:** Enforce that screen play tests only record the exact domains and paths for that use case, keeping unrelated background traffic out of fixtures.
-* **Version-Stamped Regression &amp; Contract Drift:** Detect `BREAKING` (missing keys) vs `ADDITIVE` (new fields) schema drifts between live APIs and versioned mocks across `preprod`, `staging`, and `prod`.
-* **Dynamic Property &amp; User Injection:** Inject test credentials (phone, OTP, user tier) dynamically at test runtime via `POST /__proxzy/inject` without modifying base fixture files.
-* **Universal Traffic Visibility &amp; Zero Blind Spots:** 100% of HTTP and HTTPS CONNECT connections are captured and displayed in `All Traffic` with real transferred byte counts and connection latency.
-* **Open-Source Safety Policy (Protected Raw Data Binding):** Built-in risk-protection prevents TLS decryption on sensitive system endpoints (Apple APNS `*.push.apple.com`, OS Updates `swscan.apple.com`, OCSP revocation `*.digicert.com`, and Google Play Services). These connections are safely bound as raw TCP data without TLS tampering.
-* **1-Click TLS Decryption:** Unlisted application domains appear as `RAW TUNNEL` rows with a 1-click `[+ Enable TLS Decryption]` action right in the Inspector &mdash; no manual domain typing required.
-* **Zero-Dependency Universal SDK (`@proxzy/client`):** Drop-in TypeScript client in `packages/proxzy-client` for seamless integration into any test harness.
+Nothing is locked behind accounts, trials, telemetry, or paid tiers &mdash; 100% free and open-source under the [MIT License](LICENSE).
 
 ---
 
-## 📐 Architecture &amp; System Flow
+## Key Highlights
+
+- **Isolated Browser Session (Zero Host Pollution):** Launch Chrome, Chromium, Brave, or Microsoft Edge with `--proxy-server`, a temporary `--user-data-dir`, and `--ignore-certificate-errors-spki-list=<SPKI>` using your local CA's **SPKI Fingerprint** &mdash; inspecting HTTPS without changing macOS `networksetup` or installing a Root CA in your global keychain.
+- **Standards-Aligned Virtual Certificate Portal:** Access read-only CA downloads at `http://proxzy.internal/` (ICANN-reserved `.internal` private-use TLD) or `http://proxzy.local/` (plus `http://127.0.0.1:<port>/` or your LAN IP when LAN access is enabled) via `/`, `/ca.cer`, `/ca.pem`, and `/ssl`.
+- **Safe-by-Default Selective Interception:** When `ssl_allowlist` is empty, `ProxyConfig::should_intercept` returns `false` and all `CONNECT` tunnels pass through as raw opaque tunnels (`Tunnel` rows). Built-in `BUILTIN_PROTECTED_DOMAINS` permanently exclude Apple APNs, OS updates, OCSP/CRL revocation, and Google Play Services from TLS decryption.
+- **Auto-Catch Live 200 OK (Zero-Mock Cold Start):** Intercept live `200..=299` responses, automatically scrub tokens, passwords, OTPs, phones, and IDs (`sanitize_mock_payload`), derive `Empty` collection fallbacks, and persist versioned fixtures.
+- **3-Scenario Map Local State Machine:** Every Map Rule stores `Success`, `Error`, and `Empty` scenarios plus `passthrough`, with 1-click GUI switching, per-slot customization, simulated latency (`delay_ms`), and runtime template injection (`{{TOKEN}}`, `{{OTP}}`).
+- **Version-Stamped Contract Drift:** Pure-Rust JSON schema diffing detects `Breaking` (missing/type-changed keys) and `Additive` (new keys) changes across `preprod`, `staging`, and `prod`.
+- **LAN Control Token Security:** Binds strictly to `127.0.0.1` by default (`BindPolicy::LoopbackOnly`). Opt-in `--lan` or **Allow LAN devices** enforces CSPRNG `X-Proxzy-Control` / `Authorization: Bearer` tokens (`control.token`, `0o600`), zero CORS, and anti-SSRF upstream guards.
+
+---
+
+## Zero-Cost Open-Source Distribution &amp; Gatekeeper Note
+
+ProxzyCraft v1.0.0 is distributed at **$0** under the MIT license:
+
+- **Recommended (Zero Gatekeeper Friction): Build from Source**
+  ```bash
+  git clone https://github.com/JARNBOY/ProxzyCraft.git
+  cd ProxzyCraft
+  cargo build --release --manifest-path app/Cargo.toml
+  ```
+- **Prebuilt GitHub Releases (Unsigned OSS Binaries):**
+  - Prebuilt macOS, Linux, and Windows binaries published on GitHub Releases include `SHA256SUMS.txt` checksums.
+  - Because ProxzyCraft is a **$0 community OSS project** (without a paid $99/year Apple Developer ID notarization or Mac App Store sandbox — MAS Guideline 2.4.5 conflicts with developer proxy workflows like `xcrun simctl`, `adb`, and opt-in `networksetup`), macOS Gatekeeper may warn on downloaded `.tar.gz`/`.zip`/`.app` archives.
+  - Always verify `SHA256SUMS.txt` first; on macOS, either build from source or explicitly allow via *System Settings &rarr; Privacy &amp; Security &rarr; Open Anyway*. See [`SECURITY.md`](SECURITY.md) for details.
+
+---
+
+## Architecture &amp; System Flow
 
 ```mermaid
 flowchart TD
-    subgraph Clients["1. Mobile Devices / Browsers / Apps"]
-        AUT["Mobile App Under Test (iOS Sim / Android Emu)"]
-        Browser["Host Browser / Public Web"]
+    subgraph Clients["1. Isolated Browser / Mobile Devices / Apps"]
+        Browser["Isolated Browser Session (--proxy-server + SPKI pin)"]
+        AUT["Mobile App Under Test (iOS Sim / Android Emu / Device)"]
     end
 
-    subgraph Harness["2. Test Automation Harness"]
-        AI["AI Agents (Antigravity / Cursor / Claude)"]
+    subgraph Harness["2. Test Automation & IDE Agents"]
+        AI["AI Agents (Cursor / VS Code / Claude Code / JetBrains)"]
         TestRunner["MobileWright / Playwright / Appium / CI Runner"]
-        ClientSDK["@proxzy/client (packages/proxzy-client)"]
+        ClientSDK["@proxzy/client v1.0.0 (packages/proxzy-client)"]
         TestRunner --> ClientSDK
         AI --> ClientSDK
     end
 
     subgraph ProxzyEngine["3. ProxzyCraft Engine (127.0.0.1:9090)"]
-        ControlPlane["WireMock Control Plane (/__proxzy/*)"]
-        ClientSDK -->|"HTTP Control (mock, scenario, record, inject)"| ControlPlane
-        
-        Router{"Selective SSL Allowlist"}
+        ControlPlane["Control Plane (/__proxzy/*) + Read-Only Portal (proxzy.internal / proxzy.local)"]
+        ClientSDK -->|"HTTP Control (+ X-Proxzy-Control in LAN mode)"| ControlPlane
+
+        Router{"Selective SSL Allowlist & Protected Domains"}
         AUT -->|"Proxy Traffic (Port 9090)"| Router
         Browser -->|"Proxy Traffic (Port 9090)"| Router
 
-        Router -->|"Domain NOT in Allowlist"| BlindPass["Blind TCP Passthrough (copy_bidirectional)\n[Zero TLS Errors &middot; Safe Host Browsing]"]
-        Router -->|"Domain in Allowlist"| MITM["Selective TLS MITM Interception (Local CA)"]
+        Router -->|"Unlisted or Protected Domain"| BlindPass["Raw TCP Passthrough\n[Zero TLS Errors · Safe Host Browsing]"]
+        Router -->|"Domain in Allowlist"| MITM["Selective TLS MITM (Per-Machine Local CA)"]
 
         MITM --> Dispatch{"Dispatch Pipeline"}
-        Dispatch -->|"MapRule Enabled"| MockEngine["Map Local Engine (0ms Latency)\n[Success 200 &middot; Error 500 &middot; Empty 200]"]
-        Dispatch -->|"Passthrough or Live Record"| Forwarder["Forward Upstream to Real Cloud API"]
+        Dispatch -->|"MapRule Enabled"| MockEngine["Map Local Engine (0ms / Custom Delay)\n[Success · Error · Empty]"]
+        Dispatch -->|"Passthrough or Live Record"| Forwarder["Forward Upstream (Anti-SSRF Guard)"]
 
-        Forwarder -->|"Status 200..=299 & auto_record=true"| AutoCatch["Auto-Catch & Sanitize Engine\n[Strip PII &rarr; Derive Empty &rarr; Cache Mock]"]
+        Forwarder -->|"Status 200..=299 & auto_record=true"| AutoCatch["Auto-Catch & Sanitize\n[Scrub PII -> Derive Empty -> Cache Rule]"]
         AutoCatch -->|"Persist Fixture"| MockEngine
-        MockEngine -->|"Return Mock JSON"| AUT
-        Forwarder -->|"Forward Live Response"| AUT
-    end
-
-    subgraph Upstream["4. Upstream Backends"]
-        BlindPass <-->|"Direct TLS"| Web["Public Web (Apple, Google, GitHub)"]
-        Forwarder <-->|"Real API Calls"| RealAPI["Real Cloud Servers (Staging / Production)"]
+        MockEngine -->|"Mock Response"| AUT
+        Forwarder -->|"Live Response"| AUT
     end
 ```
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
-### 1. Prerequisites
-* **Rust toolchain:** 1.75+ recommended ([Install Rust](https://www.rust-lang.org/tools/install))
-* **macOS:** For iOS Simulator keychain integration (`xcrun simctl`)
-* **Linux / Windows / macOS:** With `adb` for Android Emulators
+### Prerequisites
 
-### 2. Build &amp; Run Desktop GUI (Mode A)
+- **Rust toolchain:** 1.75+ ([Install Rust](https://www.rust-lang.org/tools/install))
+- **Node.js 22+ &amp; npm** (optional, for `@proxzy/client` typecheck and E2E/smoke tests)
+- **macOS (`xcrun simctl`)** for iOS Simulator keychain automation; **`adb`** for Android Emulators/Devices
+
+### Run the Desktop GUI
+
 ```bash
-# Clone the repository
 git clone https://github.com/JARNBOY/ProxzyCraft.git
 cd ProxzyCraft
 
-# Run native desktop app (egui / eframe)
+# Launch native desktop app (egui / eframe)
 cargo run --manifest-path app/Cargo.toml
 
-# Or build optimized release binary
+# Or build optimized release binary at target/release/proxzy
 cargo build --release --manifest-path app/Cargo.toml
 ```
 
-### 3. Run Headless E2E Daemon (Mode B)
-For CI/CD pipelines, Docker containers, or background automated testing:
+### Run Headless E2E Daemon &amp; CLI Flags
+
 ```bash
-# Start headless MITM proxy & WireMock control plane on 127.0.0.1:9090
+# Start headless MITM proxy & control plane on 127.0.0.1:9090
 cargo run --release --manifest-path app/Cargo.toml -- --headless
 
-# Or enable Auto-Catch on trusted domains directly from launch:
+# Enable Auto-Catch on trusted API domains from launch
 cargo run --release --manifest-path app/Cargo.toml -- --headless --auto-record="*.example.com,api.trusted.com"
 ```
 
----
+Supported CLI flags (`app/src/main.rs`):
 
-## 📱 Mobile Device &amp; Simulator Setup
-
-ProxzyCraft generates an isolated Certificate Authority (CA) on first run:
-* Certificate: `~/.proxzy/ca/ca.crt` (or `~/Library/Application Support/Proxzy/proxzy-ca.cer`)
-* Private Key: `~/.proxzy/ca/ca.key` *(Stored locally; never leaves your machine)*
-
-### iOS Simulator
-1. Launch ProxzyCraft and open **Live Capture**.
-2. Select your booted simulator under **Detected devices**.
-3. Click **Connect & trust**. ProxzyCraft installs the root certificate into the simulator keychain via `xcrun simctl keychain <UDID> add-root-cert` automatically.
-
-### Android Emulator
-1. Select your booted emulator (e.g. `emulator-5554`) in **Detected devices**.
-2. ProxzyCraft pushes the CA to `/sdcard/Download/proxzy-ca.cer` and configures the HTTP proxy to `10.0.2.2:9090`.
-3. Complete installation in Android **Settings &rarr; Security &rarr; Encryption &amp; credentials &rarr; Install a certificate &rarr; CA certificate**.
-*(Note: Android 7+ debug builds require a `network_security_config.xml` permitting user CA certificates).*
+| Flag | Alias / Form | Description |
+| :--- | :--- | :--- |
+| `--headless` | `-d`, `--daemon` | Run without the GUI window as a headless daemon. |
+| `--port <PORT>` | `--port=<PORT>` | Proxy &amp; control plane listening port (default `9090`). |
+| `--lan` | &mdash; | Opt in to LAN listening (`0.0.0.0:<port>`). Requires `X-Proxzy-Control` token from non-loopback peers. |
+| `--bind <IP>` | `--bind=<IP>` | Bind to an explicit IP address. |
+| `--control-token <TOK>` | `--control-token=<TOK>` | Supply an explicit control token instead of auto-generating `control.token`. |
+| `--auto-record` | `--auto-record=<d1,d2>` | Enable Auto-Catch live `200 OK` recording and optionally whitelist domains. |
+| `--full-catch` | &mdash; | Enable full HTTPS catch (while keeping `BUILTIN_PROTECTED_DOMAINS` tunnelled). |
 
 ---
 
-## ⚡ Cold-Start Resolution: Auto-Catch Live 200 OK
+## Desktop Screens &amp; Capabilities (v1.0.0)
 
-When automating UI tests for a new app without existing mock data:
-1. **Enable Auto-Catch** on your trusted API domain:
-   ```bash
-   curl -s -X POST http://127.0.0.1:9090/__proxzy/record \
-     -H "Content-Type: application/json" \
-     -d '{"enabled": true, "domains": ["*.example.com", "api.sample.com"]}'
-   ```
-2. **Run your E2E test suite once** against staging or preprod.
-3. **ProxzyCraft automatically:**
-   - Intercepts live 200..=299 responses.
-   - Scrubs confidential tokens and PII using `sanitize_mock_payload`.
-   - Generates an empty collection fallback (`auto_derive_empty_scenario`).
-   - Translates URL into an environment-agnostic wildcard pattern.
-   - Caches the mock rule in memory and writes `mocks/<domain>/<method>_<slug>/success.json`.
-4. **All future test runs hit the in-memory mock** with **0ms latency**, zero network flakiness, and 100% offline support.
+ProxzyCraft includes **12 screens** across the left navigation rail (`Traffic`, `Monitor`, `Automation & agents`, `Tools`, and `Start here`) plus a built-in Command Palette:
 
----
-
-## 📦 Universal Client SDK (`@proxzy/client`)
-
-Located in [`packages/proxzy-client`](packages/proxzy-client), this zero-dependency TypeScript package lets any testing framework operate the engine.
-
-### Installation
-```bash
-# In your test repository:
-npm install @proxzy/client
-# Or link locally from a monorepo workspace:
-npm link ../ProxzyCraft/packages/proxzy-client
-```
-
-### Usage with MobileWright / Playwright
-```ts
-import { test, expect } from '@playwright/test';
-import { ProxzyClient } from '@proxzy/client';
-
-const proxzy = new ProxzyClient();
-
-test('Verifies Wallet error recovery and session audit', async () => {
-  // 1. Start testcase-scoped session with release & environment metadata:
-  await proxzy.startSession({
-    name: 'TC_WALLET_01',
-    folder: 'Wallet',
-    app_version: '1.1.0',
-    baseline_version: '1.0.0',
-    env: 'preprod',
-    domains: ['api.example.com'],
-    paths: ['/v1/wallet/*'] // Scopes recording strictly to this screen play
-  });
-
-  // 2. Inject test user credentials dynamically:
-  await proxzy.injectUser(
-    { folder: 'Auth' },
-    { phone: '0812345678', otp: '111111', tier: 'Gold' }
-  );
-
-  // 3. Switch Wallet mock to Error scenario:
-  await proxzy.setFolderScenario('Wallet', 'error');
-
-  // 4. Drive screen via mobile-mcp / MobileWright:
-  // await mobile.tap('#wallet-tab');
-  await proxzy.expectHits('wallet/balance', 1);
-
-  // 5. Recover to Success scenario in 1 call:
-  await proxzy.setFolderScenario('Wallet', 'success');
-  // await mobile.tap('#retry-button');
-
-  // 6. Conclude session and assert audit metrics & contract drift:
-  const summary = await proxzy.endSession();
-  expect(summary.mock_calls).toBeGreaterThan(0);
-  expect(summary.breaking_drifts).toBe(0); // Zero breaking schema changes
-});
-```
+| Group | Screen | What It Does |
+| :--- | :--- | :--- |
+| **Start here** | **Tutorial** | 14-stop interactive guided tour overlay that switches directly to every screen (including Live Capture, Agent Control, Hook an IDE, and ACP Bridge). |
+| **Traffic** | **All Traffic** | Live feed with filters (`All`, `Live`, `Pinned`, `GraphQL`, `REST API`, `Errors`, `Mocked`, `Tunnels`) and right-hand Inspector (`Overview`, `Request`, `Response`, `Headers`, `cURL`), `Repeat`, `Mock this`, `Share`, and 1-click `[+ Enable TLS Decryption]` on `Tunnel` rows. |
+| **Monitor** | **Log Dashboard** | Unified session timeline for captures, mock hits, breakpoint stops, and system events with KPI cards, top hosts, `Info`/`Warn`/`Error` filters, and `Copy summary`. |
+| **Automation &amp; agents** | **Agent Control** + **Hook an IDE** | Live `/__proxzy/*` control-plane event feed, quick scenario &amp; property injection controls, plus 1-paste **Hook an IDE** briefs for **Cursor**, **VS Code**, **Claude Code**, and **JetBrains** (carrying active port, CA path, and `X-Proxzy-Control` token when LAN is enabled). |
+| **Automation &amp; agents** | **ACP Bridge** | Interactive concept lab illustrating the **Agent Client Protocol (ACP v1, JSON-RPC 2.0 over `stdio`)** editor-to-agent handshake (`initialize` &rarr; `session/new` &rarr; `session/prompt` &amp; permission gate) alongside MCP tool calls. |
+| **Automation &amp; agents** | **API Test Bench** | Execute saved REST and GraphQL requests through the Map Local mock engine with pinned expected status/hit verdicts and JSON suite import/export. |
+| **Automation &amp; agents** | **Screen Play &amp; MCP** | Run scripted flows mixing real engine steps (`Scenario`, `Inject`, real-traffic `Hit` checkpoints) with simulated device steps (`Tap`, `Type`, `ExpectVisible`) and JSON export. |
+| **Tools** | **Live Capture** | **Isolated Browser Session** 1-click launcher + SPKI Fingerprint copy + Firefox/Playwright/curl snippets, iOS Simulator &amp; Android Emulator/Device detection (`UsbReverse` / `WifiLan`), opt-in Mac `networksetup` toggle (with confirmation &amp; quit-restore), `Allow LAN devices` toggle, and SSL Allowlist / Safe Mode controls. |
+| **Tools** | **Composer** | Postman-style REST &amp; GraphQL request builder with cURL import, JSON/Raw/XML/HTML response viewer, and **Save Response as Mock** (`Success` / `Error` / `Empty`). |
+| **Tools** | **Map Local** | Manage Map Rules via Table or Pipeline view, Direct URL / cURL Hook bar, 3-scenario switching (`Success`, `Error`, `Empty`, `Passthrough`), dynamic `{{VAR}}` injection, and versioned fixture drift inspection. |
+| **Tools** | **Breakpoints** | Arm catch rules to pause live matching requests or responses, edit method/URL/headers/body in flight, and click **Continue** or **Abort**. |
+| **Tools** | **Guide &amp; Stack** | Reference guide covering Isolated Browser Session setup, mobile CA provisioning, Root CA removal, and the pure-Rust stack. |
 
 ---
 
-## 🌐 WireMock-Like REST Control Plane (`/__proxzy/*`)
+## Isolated Browser Session &amp; Mobile Onboarding
 
-External frameworks (XCTest, Espresso, Python, Shell) can control ProxzyCraft directly over `127.0.0.1:9090`:
+### 1. Desktop Web (Recommended: Isolated Browser Session)
+
+In **Live Capture** or **Guide &amp; Stack**, click **Launch Isolated Browser** (or copy the generated CLI command). ProxzyCraft discovers Google Chrome, Chromium, Brave, or Microsoft Edge and launches it with:
+- `--proxy-server=http://127.0.0.1:<port>`
+- `--user-data-dir=<temp-dir>/proxzy-browser-<port>`
+- `--ignore-certificate-errors-spki-list=<BASE64_SHA256_SPKI>`
+
+Your personal browser profile, system Wi-Fi proxy (`networksetup`), and macOS login keychain remain completely untouched. **Firefox** (`firefox -P proxzy-test -no-remote` + `http://proxzy.internal/`) and **Playwright** (`proxy` + SPKI args) snippets are also generated ready to copy.
+
+### 2. Virtual Certificate Portal
+
+When a browser or device routes HTTP traffic through ProxzyCraft, you can download the public CA certificate without touching public DNS:
+- `http://proxzy.internal/` (or `/ca.cer`, `/ca.pem`, `/ssl`)
+- `http://proxzy.local/` (or `/ca.cer`, `/ca.pem`, `/ssl`)
+- `http://127.0.0.1:<port>/` (or `http://<lan-ip>:<port>/` when LAN mode is enabled)
+
+### 3. iOS Simulator &amp; Android Emulator / Device
+
+ProxzyCraft generates your unique per-machine CA once under `~/Library/Application Support/Proxzy/` (`proxzy-ca.pem`, `proxzy-ca.cer`, `proxzy-ca-key.pem` with `0o600` permissions):
+- **iOS Simulator:** Click **Install in booted simulator** in **Live Capture** (uses `xcrun simctl keychain <UDID> add-root-cert`).
+- **Android Emulator / Device:** Choose **USB (`adb reverse`)** (`UsbReverse`) or **Wi-Fi LAN** (`WifiLan`). ProxzyCraft pushes `proxzy-ca.cer` to `/sdcard/Download/proxzy-ca.cer` and configures `adb shell settings put global http_proxy ...` (debug builds on Android 7+ require a `network_security_config.xml` permitting user CAs).
+
+---
+
+## Control Plane (`/__proxzy/*`) &amp; LAN Security
+
+When running locally, loopback callers (`127.0.0.1` / `::1`) can call `/__proxzy/*` directly. When `--lan` or **Allow LAN devices** is enabled, non-loopback callers must provide the token from `~/Library/Application Support/Proxzy/control.token` in `X-Proxzy-Control: <token>` or `Authorization: Bearer <token>`. Control routes are always denied inside decrypted HTTPS tunnels (`!is_tls`) and reject browser `Origin` headers.
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
-| `/__proxzy/health` | `GET` | Returns engine status, active rules, hit counts, and SSL allowlist. |
-| `/__proxzy/record` | `POST` | Toggles Auto-Catch live 200 OK mode and updates trusted domains. |
-| `/__proxzy/mock` | `POST` | Upserts a 3-scenario mock rule (from wildcard pattern or cURL) with optional `app_version` and `env`. |
-| `/__proxzy/scenario` | `POST` | Switches rule or folder to `success`, `error`, `empty`, or `passthrough`. |
-| `/__proxzy/inject` | `POST` | Injects dynamic template values (`{{KEY}}`) without altering base mocks. |
-| `/__proxzy/session/start` | `POST` | Starts a testcase-scoped audit session with `app_version`, `baseline_version`, `env`, and path filters. |
-| `/__proxzy/session/summary` | `GET` | Returns real-time audit summary (`mock_calls`, `upstream_calls`, `breaking_drifts`, `additive_drifts`). |
-| `/__proxzy/session/end` | `POST` | Closes active session, produces final audit report, and flushes session state. |
-| `/__proxzy/reset` | `POST` | Resets hit counters and clears session state (or deletes all rules if `clear_rules: true`). |
+| `/__proxzy/health` | `GET` | Also `/__proxzy/status` and `/__proxzy`. Returns engine status, `auto_record`, `ssl_allowlist`, active rules, and hit counts. |
+| `/__proxzy/record` | `POST` | Toggles Auto-Catch (`{"enabled": true, "domains": [...]}`) and registers domains in `ssl_allowlist`. |
+| `/__proxzy/mock` | `POST` | Upserts a 3-scenario Map Rule from `pattern`/`url` or `curl` command, supporting `method`, `folder`, `scenario`, `status`, `body`, per-slot `success_status`/`success_body`/`error_status`/`error_body`/`empty_status`/`empty_body`, `delay_ms`, `app_version`, `env`, `sanitize`, and `inject`. |
+| `/__proxzy/scenario` | `POST` | Switches matching `pattern` or `folder` to `success`, `error`, `empty`, or `passthrough`. |
+| `/__proxzy/inject` | `POST` | Injects dynamic template values (`{{KEY}}`) into matching `pattern` or `folder` rules. |
+| `/__proxzy/session/start` | `POST` | Starts a testcase-scoped audit session (`name`, `folder`, `app_version`, `baseline_version`, `env`, `domains`, `paths`). |
+| `/__proxzy/session/summary` | `GET` | Returns real-time audit counts (`mock_calls`, `upstream_calls`, `breaking_drifts`, `additive_drifts`, `calls`). |
+| `/__proxzy/session/end` | `POST` | Ends the active session and returns the final audit report. |
+| `/__proxzy/reset` | `POST` | Resets hit counters and injected properties, or deletes all Map Rules and disables mocking when `{"clear_rules": true}` is passed. |
 
 ---
 
-## 🔍 Version-Stamped Multi-Env Regression &amp; Contract Drift
+## Universal TypeScript SDK (`@proxzy/client` v1.0.0)
 
-ProxzyCraft features pure-Rust, zero-dependency JSON schema drift detection:
-* **Breaking Drifts (`missing_in_live`):** Live API omitted or altered an expected field present in mock fixtures &rarr; flags critical QA regressions that can crash the mobile UI.
-* **Additive Drifts (`added_in_live`):** Live API introduced new fields not yet defined in baseline mocks &rarr; flags non-breaking evolutions for mock fixture updates.
-* **Multi-Version Directory Hierarchy:** Fixtures automatically scale cleanly across environments without collision:
-  `mocks/<env>/v<version>/<domain>/<method>_<slug>/<scenario>.json`
-  *(e.g., `mocks/preprod/v1.1.0/api.example.com/get_v1_wallet_balance/success.json`)*
+Located in [`packages/proxzy-client`](packages/proxzy-client) with zero runtime dependencies:
+
+```ts
+import { ProxzyClient } from '@proxzy/client';
+
+const proxzy = new ProxzyClient({
+  baseUrl: 'http://127.0.0.1:9090',
+  // Optional for LAN callers (or set PROXZY_CONTROL_TOKEN env var):
+  // controlToken: process.env.PROXZY_CONTROL_TOKEN,
+  // allowRemoteControl: true,
+});
+
+await proxzy.startSession({
+  name: 'TC_WALLET_01',
+  folder: 'Wallet',
+  app_version: '1.1.0',
+  baseline_version: '1.0.0',
+  env: 'preprod',
+  domains: ['api.example.com'],
+  paths: ['/v1/wallet/*'],
+});
+
+await proxzy.mock({
+  pattern: 'https://api.example.com/v1/wallet/balance*',
+  folder: 'Wallet',
+  success_status: 200,
+  success_body: { balance: 1500, user: '{{USERNAME}}' },
+  error_status: 500,
+  error_body: { error: 'wallet_unavailable' },
+  delay_ms: 15,
+});
+
+await proxzy.inject({ folder: 'Wallet', inject: { USERNAME: 'alice' } });
+await proxzy.setFolderScenario('Wallet', 'error');
+// ... drive UI ...
+await proxzy.setFolderScenario('Wallet', 'success');
+await proxzy.expectHits('wallet/balance', 1);
+
+const summary = await proxzy.endSession();
+await proxzy.reset(true); // clears rules + injected props
+```
 
 ---
 
-## 🛡️ Privacy &amp; Security Guarantees
+## Privacy, Governance &amp; Root CA Removal
 
-* **100% Local Execution:** No cloud accounts, remote telemetry, or phone-home requests.
-* **PII &amp; Token Masking:** Sensitive data (JWTs, passwords, phones, citizen IDs) are never committed to mock fixtures.
-* **Loopback Security:** Control plane on `/__proxzy/*` validates loopback origins and rejects untrusted external traffic with HTTP 403.
-* **Selective Interception:** Untrusted or unlisted host HTTPS traffic passes through untouched without certificate warnings.
+- **Zero Telemetry &amp; Data Policy:** [`PRIVACY.md`](PRIVACY.md)
+- **Threat Model &amp; Security Policy:** [`SECURITY.md`](SECURITY.md)
+- **Third-Party Permissive Licenses (169 Crates, 0 Copyleft):** [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)
+- **Contributing Guidelines:** [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- **Code of Conduct:** [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
+
+**Quick Root CA Removal:**
+- **Isolated Browser Session:** Leaves zero keychain or OS proxy changes &mdash; simply close the browser window.
+- **macOS Keychain (if manually trusted):**
+  ```bash
+  security delete-certificate -c "Proxzy Local CA" ~/Library/Keychains/login.keychain-db
+  ```
+  See [`PRIVACY.md`](PRIVACY.md#4-complete-root-ca-removal--cleanup-instructions) for iOS Simulator, physical iOS, Android, Linux, and Windows cleanup commands.
 
 ---
 
-## 🧪 Testing the Codebase
+## Testing &amp; Full v1.0.0 Regression
 
-Verify changes to the Rust engine:
+Run the Rust unit &amp; integration suite:
 ```bash
 cargo test --manifest-path app/Cargo.toml
 ```
 
-Verify the TypeScript client SDK:
+Run the TypeScript SDK typecheck &amp; smoke tests:
 ```bash
+npm --prefix packages/proxzy-client run typecheck
 node --experimental-strip-types packages/proxzy-client/test/smoke.ts
+```
+
+Run the unified v1.0.0 pre-release regression gate (Rust suite + TypeScript checks &amp; live headless E2E via `@proxzy/client` + clean-room export verification via [`scripts/export-clean-release.sh`](scripts/export-clean-release.sh)):
+```bash
+./scripts/regression-v1.sh
 ```
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the [MIT License](LICENSE) &copy; 2026 Papon Supamongkonchai (JARNBOY).
