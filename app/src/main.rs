@@ -1,4 +1,5 @@
 mod app;
+mod browser;
 mod devices;
 mod model;
 mod proxy;

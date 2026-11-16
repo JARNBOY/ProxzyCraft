@@ -1,3 +1,4 @@
+use crate::browser;
 use crate::devices;
 use crate::model::*;
 use crate::proxy;
@@ -2165,6 +2166,81 @@ impl App {
         };
         let _ = std::process::Command::new("open").arg(&ca.dir).spawn();
         self.toast_now(ctx, "Certificate folder opened");
+    }
+
+    /// Launch a detached Chromium-family browser scoped via `--proxy-server`,
+    /// `--user-data-dir`, and `--ignore-certificate-errors-spki-list` so host
+    /// proxy settings and OS keychains remain untouched.
+    fn launch_isolated_browser(&mut self, ctx: &egui::Context) -> bool {
+        if self.proxy.is_none() {
+            self.start_proxy(ctx);
+            if self.proxy.is_none() {
+                self.toast_now(ctx, "Start the proxy before launching an isolated browser");
+                return false;
+            }
+        }
+        let ca = match self.ca_info.clone() {
+            Some(ca) => ca,
+            None => match proxy::ensure_ca() {
+                Ok(ca) => {
+                    self.ca_info = Some(ca.clone());
+                    ca
+                }
+                Err(e) => {
+                    self.log(Level::Error, "Browser", e);
+                    self.toast_now(ctx, "Could not load the local certificate");
+                    return false;
+                }
+            },
+        };
+        let spec = match browser::launch_spec(self.proxy_port, &ca.spki_fingerprint) {
+            Ok(spec) => spec,
+            Err(err) => {
+                self.log(Level::Warn, "Browser", err);
+                self.toast_now(ctx, "No Chromium browser found — copy the command instead");
+                return false;
+            }
+        };
+        if let Err(e) = std::fs::create_dir_all(&spec.profile_dir) {
+            self.log(
+                Level::Warn,
+                "Browser",
+                format!("Could not prepare isolated profile {}: {}", spec.profile_dir.display(), e),
+            );
+        }
+        let mut cmd = std::process::Command::new(&spec.executable);
+        cmd.args(&spec.args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        match cmd.spawn() {
+            Ok(_) => {
+                self.log(
+                    Level::Info,
+                    "Browser",
+                    format!(
+                        "Launched {} isolated session via 127.0.0.1:{} (profile: {})",
+                        spec.browser_name,
+                        self.proxy_port,
+                        spec.profile_dir.display()
+                    ),
+                );
+                self.toast_now(
+                    ctx,
+                    &format!("Launched {} (isolated session)", spec.browser_name),
+                );
+                true
+            }
+            Err(e) => {
+                self.log(
+                    Level::Error,
+                    "Browser",
+                    format!("Could not launch {}: {}", spec.browser_name, e),
+                );
+                self.toast_now(ctx, "Could not launch the isolated browser");
+                false
+            }
+        }
     }
 
     fn stop_proxy(&mut self, ctx: &egui::Context) {
