@@ -34,6 +34,6 @@
   "author": "ProxzyCraft Authors",
   "license": "MIT",
   "devDependencies": {
-    "typescript": "^5.3.3"
+    "typescript": "^5.7.2"
   }
 }
