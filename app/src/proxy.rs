@@ -1403,6 +1403,7 @@ fn json_str_field(json: &str, key: &str) -> Option<String> {
 }
 
 /// Extract a numeric value `"key": 200` from a JSON payload.
+#[cfg(test)]
 fn json_u16_field(json: &str, key: &str) -> Option<u16> {
     let needle = format!("\"{}\"", key);
     let idx = json.find(&needle)?;

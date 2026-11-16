@@ -3899,11 +3899,6 @@ fn pipeline_arrow(ui: &mut Ui) {
     });
 }
 
-/// The copy-ready brief an IDE agent reads before it drives the proxy engine.
-fn ide_brief(port: u16, ide: &str, place: &str) -> String {
-    ide_brief_for("127.0.0.1", port, ide, place, None)
-}
-
 /// The copy-ready brief for an IDE agent, threading host, active port, and optional control token.
 fn ide_brief_for(
     host: &str,
@@ -3954,7 +3949,7 @@ mod ide_hook_tests {
 
     #[test]
     fn brief_names_port_endpoints_and_guardrails() {
-        let brief = ide_brief(9091, "Cursor", ".cursor/rules/proxzy.mdc");
+        let brief = ide_brief_for("127.0.0.1", 9091, "Cursor", ".cursor/rules/proxzy.mdc", None);
         assert!(brief.contains("http://127.0.0.1:9091/__proxzy"));
         assert!(brief.contains(
             "{\"pattern\":\"Wallet balance\",\"scenario\":\"error\"}"
