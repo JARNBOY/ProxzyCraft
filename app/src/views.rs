@@ -882,17 +882,6 @@ impl App {
                     });
                 ui.add_space(12.0);
 
-                section_label(ui, "Connect real traffic from a simulator or emulator");
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new("Proxzy lists the devices it can see before it changes anything. Live Capture shows every booted simulator and running emulator under Detected devices; press Connect… and confirm the action you want.")
-                        .size(10.5)
-                        .color(MUTED),
-                );
-                ui.add_space(9.0);
-                let device_gap = 14.0;
-                let device_col =
-                    ((ui.available_width() - device_gap - 16.0) / 2.0).max(320.0);
                 let port = self.proxy_port;
                 let ca_pem = self
                     .ca_info
@@ -908,6 +897,90 @@ impl App {
                     .unwrap_or_else(|| {
                         "~/Library/Application Support/Proxzy/proxzy-ca.cer".into()
                     });
+                let ca_dir = self
+                    .ca_info
+                    .as_ref()
+                    .map(|c| c.dir.display().to_string())
+                    .unwrap_or_else(|| "~/Library/Application Support/Proxzy".into());
+                let spki = self
+                    .ca_info
+                    .as_ref()
+                    .map(|c| c.spki_fingerprint.as_str())
+                    .unwrap_or("");
+                let profile_dir = browser::isolated_profile_dir(port);
+                let chrome_cmd = browser::chromium_cli_command(port, spki, &profile_dir, None);
+                let firefox_cmd = browser::firefox_guidance(port, &ca_pem);
+                let playwright_cmd = browser::playwright_snippet(port, spki);
+                let ca_remove_cmd = browser::ca_removal_commands(&ca_dir);
+
+                section_label(ui, "Connect a desktop browser safely (Isolated Browser Session)");
+                ui.add_space(6.0);
+                Frame::none()
+                    .fill(CARD)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .rounding(11.0)
+                    .inner_margin(Margin::same(14.0))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            pill(
+                                ui,
+                                "ZERO KEYCHAIN TRUST",
+                                GREEN,
+                                Color32::from_rgba_unmultiplied(61, 214, 149, 18),
+                            );
+                            ui.label(
+                                RichText::new("Inspect HTTPS in Chrome, Chromium, Brave, or Edge without altering macOS Wi-Fi proxy or installing a Root CA.")
+                                    .size(10.5)
+                                    .color(MUTED),
+                            );
+                        });
+                        ui.add_space(7.0);
+                        step_row(ui, 1, "Launch with per-process flags", "Proxzy passes --proxy-server, an isolated --user-data-dir, and --ignore-certificate-errors-spki-list=<SPKI>.");
+                        step_row(ui, 2, "Firefox & Playwright alternatives", "Firefox uses an isolated profile (-P proxzy-test) importing ca.pem or opening http://proxzy.internal/. Playwright accepts proxy + SPKI args directly.");
+                        step_row(ui, 3, "Zero cleanup on exit", "Closing the isolated browser stops proxying immediately. Only opt-in keychain installs need CA removal.");
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            if primary_button(ui, "Launch Isolated Browser").clicked() {
+                                self.launch_isolated_browser(ctx);
+                            }
+                            if secondary_button(ui, "Copy Chrome command").clicked() {
+                                self.copy(ctx, chrome_cmd.clone(), "Isolated browser command copied");
+                            }
+                            if secondary_button(ui, "Copy Playwright").clicked() {
+                                self.copy(ctx, playwright_cmd.clone(), "Playwright snippet copied");
+                            }
+                            if secondary_button(ui, "Copy Firefox guide").clicked() {
+                                self.copy(ctx, firefox_cmd.clone(), "Firefox isolation steps copied");
+                            }
+                            if secondary_button(ui, "Copy CA removal").clicked() {
+                                self.copy(ctx, ca_remove_cmd.clone(), "CA removal commands copied");
+                            }
+                        });
+                        ui.add_space(6.0);
+                        command_box(ui, "Isolated Chromium CLI", &chrome_cmd, ctx, self);
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(
+                                "Certificate Portal aliases: http://proxzy.internal/ or http://proxzy.local/ · Keychain removal (if ever installed): security delete-certificate -c \"Proxzy Local CA\" ~/Library/Keychains/login.keychain-db",
+                            )
+                            .size(9.5)
+                            .color(FAINT),
+                        );
+                    });
+                ui.add_space(14.0);
+
+                section_label(ui, "Connect real traffic from a simulator or emulator");
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("Proxzy lists the devices it can see before it changes anything. Live Capture shows every booted simulator and running emulator under Detected devices; press Connect… and confirm the action you want.")
+                        .size(10.5)
+                        .color(MUTED),
+                );
+                ui.add_space(9.0);
+                let device_gap = 14.0;
+                let device_col =
+                    ((ui.available_width() - device_gap - 16.0) / 2.0).max(320.0);
                 ui.horizontal_top(|ui| {
                     ui.allocate_ui_with_layout(
                         Vec2::new(device_col, 0.0),
@@ -1026,8 +1099,8 @@ impl App {
                         for line in [
                             "Nothing in the list: open Simulator from Xcode or start an AVD, and make sure adb is on PATH. Press Scan again.",
                             "HTTPS shows only CONNECT tunnels: the certificate is not trusted yet. Reinstall it and restart the simulator or the app.",
-                            "Physical Android phone: join the same Wi-Fi, use the Mac LAN address shown in the card, and allow incoming connections in the macOS firewall.",
-                            "To undo: choose Certificate only next time, or clear the Android proxy and the Mac web proxy from the buttons under the device card.",
+                            "Physical Android phone: join the same Wi-Fi, use the Mac LAN address shown in the card (or http://proxzy.internal/ / http://proxzy.local/ when proxied), and allow incoming connections in the macOS firewall.",
+                            "To undo: Isolated Browser Sessions leave no trace on exit. For devices, choose Certificate only next time, clear Android/Mac proxy buttons, or run `security delete-certificate -c \"Proxzy Local CA\" ~/Library/Keychains/login.keychain-db` to remove a keychain Root CA.",
                         ] {
                             ui.horizontal_top(|ui| {
                                 dot(ui, FAINT, 5.0);
@@ -1619,6 +1692,7 @@ impl App {
         let mut do_reboot = false;
         let mut do_mac_proxy = false;
         let mut do_mac_clear = false;
+        let mut do_launch_browser = false;
         let mut do_android = false;
         let mut do_android_proxy = false;
         let mut do_android_clear = false;
@@ -1799,6 +1873,7 @@ impl App {
                                 &mut do_reboot,
                                 &mut do_mac_proxy,
                                 &mut do_mac_clear,
+                                &mut do_launch_browser,
                                 &mut do_android,
                                 &mut do_android_proxy,
                                 &mut do_android_clear,
@@ -1841,6 +1916,9 @@ impl App {
         }
         if do_mac_clear {
             self.set_mac_proxy(ctx, true);
+        }
+        if do_launch_browser {
+            self.launch_isolated_browser(ctx);
         }
         if do_android {
             self.push_ca_android(ctx);
@@ -1991,6 +2069,7 @@ impl App {
         do_reboot: &mut bool,
         _do_mac_proxy: &mut bool,
         do_mac_clear: &mut bool,
+        do_launch_browser: &mut bool,
         do_android: &mut bool,
         do_android_proxy: &mut bool,
         do_android_clear: &mut bool,
@@ -2374,24 +2453,75 @@ impl App {
                     command_box(ui, "Commands", &cmd, ctx, self);
                 }
                 _ => {
-                    step_row(ui, 1, "Trust the CA on this Mac", "Add the certificate to the login keychain and set it to Always Trust.");
-                    step_row(ui, 2, "Set the macOS web proxy", "Use the commands below for the active network service, then open the app you want to inspect.");
-                    step_row(ui, 3, "Or use curl", "Pass -x http://127.0.0.1:PORT for a single command without changing system settings.");
-                    ui.add_space(4.0);
-                    let cmd = format!(
-                        "security add-trusted-cert -d -r trustRoot -k ~/Library/Keychains/login.keychain-db \"{}\"\nnetworksetup -setwebproxy Wi-Fi 127.0.0.1 {}\nnetworksetup -setsecurewebproxy Wi-Fi 127.0.0.1 {}\ncurl -x http://127.0.0.1:{} https://example.com/ -I",
-                        self.ca_info
-                            .as_ref()
-                            .map(|c| c.pem_path.display().to_string())
-                            .unwrap_or_else(|| "~/Library/Application Support/Proxzy/proxzy-ca.pem".into()),
-                        port,
-                        port,
-                        port
-                    );
-                    command_box(ui, "Commands", &cmd, ctx, self);
-                    ui.add_space(8.0);
+                    let ca_pem = self
+                        .ca_info
+                        .as_ref()
+                        .map(|c| c.pem_path.display().to_string())
+                        .unwrap_or_else(|| {
+                            "~/Library/Application Support/Proxzy/proxzy-ca.pem".into()
+                        });
+                    let spki = self
+                        .ca_info
+                        .as_ref()
+                        .map(|c| c.spki_fingerprint.as_str())
+                        .unwrap_or("");
+                    let profile_dir = browser::isolated_profile_dir(port);
+                    let chrome_cmd = browser::chromium_cli_command(port, spki, &profile_dir, None);
+                    let firefox_cmd = browser::firefox_guidance(port, &ca_pem);
+                    let playwright_cmd = browser::playwright_snippet(port, spki);
+
                     ui.horizontal(|ui| {
-                        if primary_button(ui, "Set Mac proxy").clicked() {
+                        section_label(ui, "Isolated Browser Session");
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            pill(
+                                ui,
+                                "NO SYSTEM CHANGES",
+                                GREEN,
+                                Color32::from_rgba_unmultiplied(61, 214, 149, 18),
+                            );
+                        });
+                    });
+                    ui.add_space(4.0);
+                    step_row(ui, 1, "Launch an isolated browser (recommended)", "Starts Chrome, Chromium, Brave, or Edge with --proxy-server, a temporary --user-data-dir, and your CA's SPKI Fingerprint.");
+                    step_row(ui, 2, "Leave host proxy & keychain untouched", "Your main browser, Wi-Fi proxy, and macOS login keychain stay clean.");
+                    step_row(ui, 3, "Close when finished", "Traffic stops routing through Proxzy the moment you close the isolated window.");
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if primary_button(ui, "Launch Isolated Browser").clicked() {
+                            *do_launch_browser = true;
+                        }
+                        if secondary_button(ui, "Copy command").clicked() {
+                            self.copy(ctx, chrome_cmd.clone(), "Isolated browser command copied");
+                        }
+                        if secondary_button(ui, "Copy Playwright").clicked() {
+                            self.copy(ctx, playwright_cmd.clone(), "Playwright snippet copied");
+                        }
+                        if secondary_button(ui, "Copy Firefox guide").clicked() {
+                            self.copy(ctx, firefox_cmd.clone(), "Firefox isolation steps copied");
+                        }
+                    });
+                    ui.add_space(6.0);
+                    command_box(ui, "Isolated Chrome / Chromium command", &chrome_cmd, ctx, self);
+                    ui.add_space(6.0);
+                    ui.collapsing("Firefox, Playwright & curl alternatives", |ui| {
+                        let alt_cmd = format!(
+                            "{}\n\n# Playwright\n{}\n\n# Single-request curl\ncurl -x http://127.0.0.1:{} --cacert \"{}\" https://example.com/ -I",
+                            firefox_cmd, playwright_cmd, port, ca_pem
+                        );
+                        command_box(ui, "Alternatives", &alt_cmd, ctx, self);
+                    });
+                    ui.add_space(8.0);
+                    hsep(ui);
+                    ui.add_space(7.0);
+                    ui.label(
+                        RichText::new("OPT-IN SYSTEM PROXY (NATIVE DESKTOP APPS)")
+                            .size(8.5)
+                            .color(FAINT)
+                            .strong(),
+                    );
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if secondary_button(ui, "Set Mac proxy").clicked() {
                             self.mac_proxy_confirm_open = true;
                         }
                         if secondary_button(ui, "Clear Mac proxy").clicked() {
@@ -2399,8 +2529,16 @@ impl App {
                         }
                     });
                     ui.add_space(4.0);
+                    ui.collapsing("Manual networksetup & keychain CA commands", |ui| {
+                        let legacy_cmd = format!(
+                            "security add-trusted-cert -d -r trustRoot -k ~/Library/Keychains/login.keychain-db \"{}\"\nnetworksetup -setwebproxy Wi-Fi 127.0.0.1 {}\nnetworksetup -setsecurewebproxy Wi-Fi 127.0.0.1 {}\n# Uninstall CA from keychain later:\nsecurity delete-certificate -c \"Proxzy Local CA\" ~/Library/Keychains/login.keychain-db",
+                            ca_pem, port, port
+                        );
+                        command_box(ui, "System commands", &legacy_cmd, ctx, self);
+                    });
+                    ui.add_space(4.0);
                     ui.label(
-                        RichText::new("This changes the web proxy for every enabled network service. Proxzy restores it automatically when you quit; Clear Mac proxy does it now.")
+                        RichText::new("Set Mac proxy edits networksetup for active services (restored on quit). Isolated Browser needs no proxy or CA cleanup.")
                             .size(9.5)
                             .color(FAINT),
                     );
@@ -2451,6 +2589,30 @@ impl App {
                                 RichText::new(&ca.fingerprint)
                                     .font(mono(8.8))
                                     .color(Color32::from_rgb(178, 204, 240)),
+                            )
+                            .wrap(),
+                        );
+                    });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    form_label(ui, "SPKI fingerprint (Isolated Browser)");
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if secondary_button(ui, "Copy SPKI").clicked() {
+                            self.copy(ctx, ca.spki_fingerprint.clone(), "SPKI fingerprint copied");
+                        }
+                    });
+                });
+                Frame::none()
+                    .fill(INPUT)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .rounding(7.0)
+                    .inner_margin(Margin::symmetric(8.0, 7.0))
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&ca.spki_fingerprint)
+                                    .font(mono(8.8))
+                                    .color(Color32::from_rgb(142, 224, 186)),
                             )
                             .wrap(),
                         );
@@ -2510,6 +2672,14 @@ impl App {
             ui.add_space(2.0);
             ui.label(
                 RichText::new("The private key stays on this Mac. Traffic is captured locally and never uploaded. Turn the proxy off when you are done.")
+                    .size(9.5)
+                    .color(FAINT),
+            );
+            ui.add_space(8.0);
+            ui.label(RichText::new("CA REMOVAL").size(8.5).color(FAINT).strong());
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new("Isolated Browser leaves no keychain entries. If you opted into trusting the Root CA in macOS Keychain, run: security delete-certificate -c \"Proxzy Local CA\" ~/Library/Keychains/login.keychain-db")
                     .size(9.5)
                     .color(FAINT),
             );

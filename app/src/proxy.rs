@@ -113,6 +113,7 @@ pub struct CaInfo {
     pub pem_path: PathBuf,
     pub cer_path: PathBuf,
     pub fingerprint: String,
+    pub spki_fingerprint: String,
 }
 
 #[derive(Clone, Debug)]
@@ -261,13 +262,17 @@ pub fn app_data_dir() -> PathBuf {
 
 /// Create the local certificate authority once, then reuse it across launches.
 pub fn ensure_ca() -> Result<CaInfo, String> {
-    let dir = app_data_dir();
+    ensure_ca_in(&app_data_dir())
+}
+
+fn ensure_ca_in(dir: &Path) -> Result<CaInfo, String> {
+    let dir = dir.to_path_buf();
     std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create {}: {}", dir.display(), e))?;
     let pem_path = dir.join("proxzy-ca.pem");
     let cer_path = dir.join("proxzy-ca.cer");
     let key_path = dir.join("proxzy-ca-key.pem");
 
-    let (_key, cert_pem) = if pem_path.exists() && key_path.exists() {
+    let (key, cert_pem) = if pem_path.exists() && key_path.exists() {
         let key_text = std::fs::read_to_string(&key_path)
             .map_err(|e| format!("Cannot read CA key: {}", e))?;
         restrict_permissions(&key_path);
@@ -313,12 +318,14 @@ pub fn ensure_ca() -> Result<CaInfo, String> {
     let fingerprint = base64_decode(&b64)
         .map(|der| fingerprint_of(&der))
         .unwrap_or_else(|| "unknown".to_string());
+    let spki_fingerprint = spki_fingerprint_of_key(&key);
 
     Ok(CaInfo {
         dir,
         pem_path,
         cer_path,
         fingerprint,
+        spki_fingerprint,
     })
 }
 
@@ -354,6 +361,38 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
+        out.push(TABLE[((n >> 12) & 0x3f) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Base64-encoded SHA-256 of the X.509 SubjectPublicKeyInfo (DER) for Chromium's
+/// `--ignore-certificate-errors-spki-list` flag.
+pub fn spki_fingerprint_of_key(key: &KeyPair) -> String {
+    let spki_der = key.public_key_der();
+    let digest = Sha256::digest(&spki_der);
+    base64_encode(&digest)
 }
 
 fn fingerprint_of(der: &[u8]) -> String {
@@ -1493,7 +1532,12 @@ fn host_without_port(host: &str) -> &str {
 
 fn is_local_host(host: &str, binding: &ListenerBinding) -> bool {
     let name = host_without_port(host).to_ascii_lowercase();
-    if name == "localhost" || name == "proxzy.local" || name == "127.0.0.1" || name == "::1" {
+    if name == "localhost"
+        || name == "proxzy.local"
+        || name == "proxzy.internal"
+        || name == "127.0.0.1"
+        || name == "::1"
+    {
         return true;
     }
     if name == binding.bind_ip.to_string().to_ascii_lowercase() {
@@ -1525,7 +1569,10 @@ pub fn classify_service_request(
     let path_only = path.split('?').next().unwrap_or(&path);
     let absolute = target.starts_with("http://") || target.starts_with("https://");
     let local_host = is_local_host(host, binding);
-    let via_portal_host = local_host || host_without_port(host).eq_ignore_ascii_case("proxzy.local");
+    let portal_host = host_without_port(host);
+    let via_portal_host = local_host
+        || portal_host.eq_ignore_ascii_case("proxzy.local")
+        || portal_host.eq_ignore_ascii_case("proxzy.internal");
 
     if path_only.starts_with("/__proxzy") && (!absolute || via_portal_host) {
         return ServiceRoute::ControlPlane;
@@ -1533,7 +1580,7 @@ pub fn classify_service_request(
     if via_portal_host
         && matches!(
             path_only,
-            "/" | "/ca.cer" | "/ca.pem" | "/ssl" | "/proxzy.local"
+            "/" | "/ca.cer" | "/ca.pem" | "/ssl" | "/proxzy.local" | "/proxzy.internal"
         )
     {
         return ServiceRoute::Portal;
@@ -3116,6 +3163,7 @@ mod proxy_tests {
         let key = KeyPair::generate().unwrap();
         let params = CertificateParams::new(Vec::<String>::new()).unwrap();
         let cert = params.self_signed(&key).unwrap();
+        let spki_fp = spki_fingerprint_of_key(&key);
         let ca = Arc::new(Ca {
             cert_pem: cert.pem(),
             key,
@@ -3125,6 +3173,7 @@ mod proxy_tests {
                 pem_path: PathBuf::new(),
                 cer_path: PathBuf::new(),
                 fingerprint: String::new(),
+                spki_fingerprint: spki_fp,
             },
         });
         let ctx = ConnCtx {
@@ -3391,6 +3440,43 @@ mod proxy_tests {
         );
     }
 
+    #[test]
+    fn portal_recognizes_proxzy_internal_and_proxzy_local() {
+        let binding = ListenerBinding {
+            bind_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            port: 9090,
+            policy: BindPolicy::LoopbackOnly,
+        };
+        for host in ["proxzy.local", "proxzy.internal", "PROXZY.INTERNAL"] {
+            assert_eq!(
+                classify_service_request("/", host, 80, false, &binding),
+                ServiceRoute::Portal,
+                "expected {} root to route to Portal",
+                host
+            );
+            assert_eq!(
+                classify_service_request("/ca.cer", host, 80, false, &binding),
+                ServiceRoute::Portal
+            );
+            assert_eq!(
+                classify_service_request("/ca.pem", host, 80, false, &binding),
+                ServiceRoute::Portal
+            );
+            assert_eq!(
+                classify_service_request("/", host, 443, true, &binding),
+                ServiceRoute::ProxyForward,
+                "TLS tunnel to {} must never hit Portal",
+                host
+            );
+        }
+        assert_eq!(
+            classify_service_request("/proxzy.internal", "127.0.0.1:9090", 9090, false, &binding),
+            ServiceRoute::Portal
+        );
+        assert!(is_local_host("proxzy.internal", &binding));
+        assert!(is_local_host("proxzy.internal:9090", &binding));
+    }
+
     #[tokio::test]
     async fn ssrf_guard_blocks_loopback_bounce_from_lan_and_self_listener() {
         let binding = lan_binding("proxzy_secret");
@@ -3452,6 +3538,7 @@ mod proxy_tests {
         std::fs::write(&pem_path, &cert_pem).unwrap();
         std::fs::write(&cer_path, &der).unwrap();
 
+        let spki_fp = spki_fingerprint_of_key(&key);
         let ca = Arc::new(Ca {
             key,
             cert,
@@ -3461,6 +3548,7 @@ mod proxy_tests {
                 pem_path,
                 cer_path,
                 fingerprint: "TEST:CA:FP".into(),
+                spki_fingerprint: spki_fp,
             },
         });
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -3494,7 +3582,7 @@ mod proxy_tests {
         };
 
         let srv = tokio::spawn(async move {
-            for _ in 0..4 {
+            for _ in 0..6 {
                 let (sock, peer) = listener.accept().await.unwrap();
                 let c = ctx.clone();
                 tokio::spawn(async move {
@@ -3525,6 +3613,25 @@ mod proxy_tests {
         assert!(portal_str.starts_with("HTTP/1.1 200 OK"));
         assert!(portal_str.contains("/ca.cer"));
 
+        // 2b. Proxy-form request to http://proxzy.internal/ serves read-only HTML portal
+        let internal_bytes = send(
+            "GET http://proxzy.internal/ HTTP/1.1\r\nHost: proxzy.internal\r\nConnection: close\r\n\r\n"
+                .to_string(),
+        )
+        .await;
+        let internal_str = String::from_utf8_lossy(&internal_bytes);
+        assert!(internal_str.starts_with("HTTP/1.1 200 OK"));
+        assert!(internal_str.contains("/ca.cer"));
+
+        // 2c. Portal rejects mutations even via proxzy.internal
+        let internal_post = send(
+            "POST http://proxzy.internal/ca.cer HTTP/1.1\r\nHost: proxzy.internal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_string(),
+        )
+        .await;
+        let internal_post_str = String::from_utf8_lossy(&internal_post);
+        assert!(internal_post_str.starts_with("HTTP/1.1 405 Method Not Allowed"));
+
         // 3. Browser CORS Origin header on /__proxzy/health is denied with 403
         let cors_bytes = send(format!(
             "GET /__proxzy/health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: https://evil.example\r\nConnection: close\r\n\r\n",
@@ -3545,6 +3652,64 @@ mod proxy_tests {
         assert!(health_str.contains("\"engine\":\"ProxzyCraft\""));
 
         srv.await.unwrap();
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn spki_fingerprint_matches_openssl_sha256_of_subject_public_key_info() {
+        // Synthetic test fixture ECDSA P-256 PKCS#8 private key verified against:
+        // `openssl pkey -pubout -outform DER | openssl dgst -sha256 -binary | openssl enc -base64`
+        const TEST_PKCS8_PEM: &str = "-----BEGIN PRIVATE KEY-----\n\
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgME4/ARAD/fB9a5ak\n\
+iLlVkvAXWQoJguAgIhYzgtWFRTuhRANCAATlqVbWxyrIiX44QJrPF/7M9m6ryzFi\n\
+WcDgD3Jbt1yUOIHaezfVFGc9Yp8c7dkf1UIKMFn/SZ2JmirR1hCfSMB5\n\
+-----END PRIVATE KEY-----\n";
+        let key = KeyPair::from_pem(TEST_PKCS8_PEM).unwrap();
+        assert_eq!(key.public_key_der().len(), 91);
+        assert_eq!(
+            spki_fingerprint_of_key(&key),
+            "06IY2CP9PulGUPlnE3P6NsMfJkoYhCeKeKJ/nR+lEH4="
+        );
+    }
+
+    #[test]
+    fn spki_fingerprint_matches_embedded_cert_spki_and_persists_across_ensure_ca() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "proxzy-ca-spki-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let first = ensure_ca_in(&temp_dir).expect("initial ensure_ca_in");
+        assert_eq!(first.spki_fingerprint.len(), 44);
+        assert!(first.spki_fingerprint.ends_with('='));
+        assert_eq!(
+            base64_decode(&first.spki_fingerprint).map(|b| b.len()),
+            Some(32)
+        );
+
+        let key_text = std::fs::read_to_string(temp_dir.join("proxzy-ca-key.pem")).unwrap();
+        let cert_pem = std::fs::read_to_string(&first.pem_path).unwrap();
+        let key = KeyPair::from_pem(&key_text).unwrap();
+        let spki_der = key.public_key_der();
+        let cert_der = pem_to_der(&cert_pem).unwrap();
+
+        // SPKI DER bytes must be embedded verbatim inside the X.509 certificate DER
+        assert!(
+            cert_der.windows(spki_der.len()).any(|w| w == spki_der.as_slice()),
+            "X.509 certificate DER must contain SubjectPublicKeyInfo DER"
+        );
+        // SPKI hash must NOT equal the full certificate DER hash
+        let full_cert_b64 = base64_encode(&Sha256::digest(&cert_der));
+        assert_ne!(first.spki_fingerprint, full_cert_b64);
+
+        // Second load reuses the same key & cert and yields the exact same fingerprints
+        let second = ensure_ca_in(&temp_dir).expect("reload ensure_ca_in");
+        assert_eq!(first.fingerprint, second.fingerprint);
+        assert_eq!(first.spki_fingerprint, second.spki_fingerprint);
+
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
