@@ -1051,6 +1051,9 @@ impl App {
     }
 
     fn agent_endpoint_card(&mut self, ui: &mut Ui, ctx: &egui::Context, port: u16) {
+        let host = self.screen_target_host();
+        let token = self.screen_target_token();
+        let lan_active = self.lan_enabled || token.is_some();
         studio_card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
@@ -1063,16 +1066,25 @@ impl App {
                     if secondary_button(ui, "Copy base URL").clicked() {
                         self.copy(
                             ctx,
-                            format!("http://127.0.0.1:{}", port),
+                            format!("http://{}:{}", host, port),
                             "Control plane URL copied",
                         );
                     }
-                    pill(
-                        ui,
-                        "LOOPBACK ONLY",
-                        GREEN,
-                        Color32::from_rgba_unmultiplied(61, 214, 149, 16),
-                    );
+                    if lan_active {
+                        pill(
+                            ui,
+                            "LAN + TOKEN",
+                            AMBER,
+                            Color32::from_rgba_unmultiplied(255, 181, 84, 16),
+                        );
+                    } else {
+                        pill(
+                            ui,
+                            "LOOPBACK ONLY",
+                            GREEN,
+                            Color32::from_rgba_unmultiplied(61, 214, 149, 16),
+                        );
+                    }
                 });
             });
             ui.add_space(8.0);
@@ -1118,10 +1130,20 @@ impl App {
                 ui.label(RichText::new(note).size(9.0).color(FAINT));
                 ui.add_space(5.0);
             }
-            studio_note(
-                ui,
-                "External agents reach these over 127.0.0.1 only. Mobile devices use the bridge above.",
-            );
+            if let Some(tok) = token {
+                studio_note(
+                    ui,
+                    &format!(
+                        "LAN mode active — pass X-Proxzy-Control: {} on non-loopback /__proxzy/* calls.",
+                        tok
+                    ),
+                );
+            } else {
+                studio_note(
+                    ui,
+                    "External agents reach these over 127.0.0.1 only. Mobile devices use the bridge above.",
+                );
+            }
         });
     }
 
@@ -1132,6 +1154,9 @@ impl App {
     fn agent_ide_card(&mut self, ui: &mut Ui, ctx: &egui::Context, port: u16) {
         let mut copy: Option<(String, &'static str)> = None;
         let mut open_acp = false;
+        let host = self.screen_target_host();
+        let token = self.screen_target_token();
+        let token_ref = token.as_deref();
         studio_card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Hook an IDE").size(13.0).strong().color(TEXT));
@@ -1177,7 +1202,7 @@ impl App {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if secondary_button(ui, "Copy brief").clicked() {
                             copy = Some((
-                                ide_brief(port, name, place),
+                                ide_brief_for(&host, port, name, place, token_ref),
                                 "IDE brief copied — paste it into the rules file",
                             ));
                         }
@@ -1189,7 +1214,7 @@ impl App {
             ui.add_space(4.0);
             hsep(ui);
             ui.add_space(7.0);
-            let health = format!("curl -s http://127.0.0.1:{}/__proxzy/health", port);
+            let health = studio::health_curl_for(&host, port, token_ref);
             ui.horizontal(|ui| {
                 pill(
                     ui,
@@ -3876,11 +3901,33 @@ fn pipeline_arrow(ui: &mut Ui) {
 
 /// The copy-ready brief an IDE agent reads before it drives the proxy engine.
 fn ide_brief(port: u16, ide: &str, place: &str) -> String {
+    ide_brief_for("127.0.0.1", port, ide, place, None)
+}
+
+/// The copy-ready brief for an IDE agent, threading host, active port, and optional control token.
+fn ide_brief_for(
+    host: &str,
+    port: u16,
+    ide: &str,
+    place: &str,
+    control_token: Option<&str>,
+) -> String {
+    let clean_token = control_token.map(str::trim).filter(|t| !t.is_empty());
+    let token_line = clean_token
+        .map(|t| format!("Control header: X-Proxzy-Control: {t}\n"))
+        .unwrap_or_default();
+    let constraint = match clean_token {
+        Some(t) => format!(
+            "Constraints: LAN mode is active — include `-H 'X-Proxzy-Control: {t}'` on non-loopback /__proxzy/* calls, never change host proxy settings, and report a check as passed only after the engine response confirms it.\n"
+        ),
+        None => "Constraints: loopback only (never expose the port), never change host proxy settings, and report a check as passed only after the engine response confirms it.\n".to_string(),
+    };
     format!(
         "# Proxzy engine brief — {ide}\n\n\
          Paste into: {place}\n\n\
-         Proxy: http://127.0.0.1:{port}\n\
-         Control plane: http://127.0.0.1:{port}/__proxzy\n\
+         Proxy: http://{host}:{port}\n\
+         Control plane: http://{host}:{port}/__proxzy\n\
+         {token_line}\
          CA for simulators: ~/Library/Application Support/Proxzy/proxzy-ca.pem\n\n\
          Use this local engine for every mocked, replayed or verified call:\n\
          1. GET /__proxzy/health — confirm the engine is ready, then note the port and rule count.\n\
@@ -3888,7 +3935,7 @@ fn ide_brief(port: u16, ide: &str, place: &str) -> String {
          3. POST /__proxzy/inject {{\"pattern\":\"Wallet balance\",\"inject\":{{\"USERNAME\":\"qa.agent\"}}}} — add a body token.\n\
          4. Send the app request through the proxy, then read /__proxzy/health and /__proxzy/session/summary to verify what was mocked and what went upstream.\n\
          5. POST /__proxzy/reset when the scenario should return to normal.\n\n\
-         Constraints: loopback only (never expose the port), never change host proxy settings, and report a check as passed only after the engine response confirms it.\n"
+         {constraint}"
     )
 }
 
@@ -3914,5 +3961,37 @@ mod ide_hook_tests {
         ));
         assert!(brief.contains(".cursor/rules/proxzy.mdc"));
         assert!(brief.contains("loopback only"));
+    }
+
+    #[test]
+    fn brief_and_secondary_copy_helpers_thread_port_and_control_token() {
+        let lan_brief = ide_brief_for(
+            "192.168.1.42",
+            9191,
+            "Cursor",
+            ".cursor/rules/proxzy.mdc",
+            Some("proxzy_tok_123"),
+        );
+        assert!(lan_brief.contains("http://192.168.1.42:9191/__proxzy"));
+        assert!(lan_brief.contains("X-Proxzy-Control: proxzy_tok_123"));
+
+        let local_brief = ide_brief_for(
+            "127.0.0.1",
+            9191,
+            "Cursor",
+            ".cursor/rules/proxzy.mdc",
+            None,
+        );
+        assert!(local_brief.contains("http://127.0.0.1:9191/__proxzy"));
+        assert!(!local_brief.contains("X-Proxzy-Control"));
+        assert!(local_brief.contains("loopback only"));
+
+        let lan_mock_curl = dynamic_mock_curl_for("192.168.1.42", 9191, Some("proxzy_tok_123"));
+        assert!(lan_mock_curl.contains("http://192.168.1.42:9191/__proxzy/mock"));
+        assert!(lan_mock_curl.contains("-H 'X-Proxzy-Control: proxzy_tok_123'"));
+
+        let local_mock_curl = dynamic_mock_curl_for("127.0.0.1", 9191, None);
+        assert!(local_mock_curl.contains("http://127.0.0.1:9191/__proxzy/mock"));
+        assert!(!local_mock_curl.contains("X-Proxzy-Control"));
     }
 }
