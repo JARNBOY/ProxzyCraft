@@ -19,8 +19,20 @@ The per-instance secret saved with `0600` permissions in `control.token` that au
 _Avoid_: API key, password, JWT
 
 **Certificate Portal**:
-The read-only provisioning endpoints (`/`, `/ca.pem`, `/ca.cer`, and `http://proxzy.local/`) that serve only the local CA certificate without accepting control mutations.
+The read-only provisioning endpoints (`/`, `/ca.pem`, `/ca.cer`, `http://proxzy.local/`, and `http://proxzy.internal/`) that serve only the local CA certificate without accepting control mutations.
 _Avoid_: Admin portal, onboarding server
+
+**Isolated Browser Session**:
+A dedicated desktop browser launch scoped via a per-process proxy flag, an isolated profile directory, and the local CA's SPKI Fingerprint, leaving host OS proxy configuration and system/login keychains untouched.
+_Avoid_: Global browser proxy, system proxy override
+
+**SPKI Fingerprint**:
+The Base64-encoded SHA-256 hash of the local CA's Subject Public Key Info, authorizing TLS inspection strictly within an Isolated Browser Session without machine-wide Root CA trust.
+_Avoid_: Disable SSL, insecure mode
+
+**Clean Release**:
+A public open-source distribution stripped of build artifacts, private CA keys, control tokens, and developer scratch files, packaged with privacy, third-party notices, CA removal, and multi-layer regression verification.
+_Avoid_: Raw repo archive, debug bundle
 
 **Protected Domain**:
 An OS telemetry, push, OCSP/CRL certificate revocation, or system update hostname that always flows as a raw opaque tunnel without TLS decryption.
