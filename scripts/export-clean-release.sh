@@ -69,6 +69,7 @@ if [[ "$MODE" == "orphan" ]]; then
     "$DEST/attachments" \
     "$DEST/investigation.cany" \
     "$DEST/.scratch" \
+    "$DEST/.ua" \
     "$DEST/inbox" \
     "$DEST/pinned" \
     "$DEST/capture" \
@@ -81,10 +82,15 @@ if [[ "$MODE" == "orphan" ]]; then
     "$DEST/app/README.md" \
     "$DEST/decisions.tsv"
 
+  find "$DEST" \( -name '.DS_Store' -o -name '*.pem' -o -name '*.key' -o -name 'control.token' \) -exec rm -rf {} +
+
   git -C "$DEST" init -q -b main
   git -C "$DEST" add -A
-  COMMIT_MSG="feat(release): initial clean-room public MIT release (${TAG:-v0.1.0}, from $SOURCE_HEAD)"
-  git -C "$DEST" commit -q -m "$COMMIT_MSG"
+  COMMIT_MSG="feat(release): initial clean-room public MIT release (${TAG:-v1.0.0}, from $SOURCE_HEAD)"
+  git -C "$DEST" \
+    -c user.name="ProxzyCraft Release" \
+    -c user.email="release@proxzycraft.invalid" \
+    commit -q -m "$COMMIT_MSG"
   if [[ -n "$TAG" ]]; then
     git -C "$DEST" tag "$TAG"
   fi
@@ -105,6 +111,7 @@ else
     --path attachments \
     --path investigation.cany \
     --path .scratch \
+    --path .ua \
     --path inbox \
     --path pinned \
     --path capture \
@@ -115,7 +122,11 @@ else
     --path usage.json \
     --path app/Cargo.lock \
     --path app/README.md \
-    --path decisions.tsv
+    --path decisions.tsv \
+    --path-glob '*.DS_Store' \
+    --path-glob '*.pem' \
+    --path-glob '*.key' \
+    --path-glob '*control.token'
   git -C "$DEST" reflog expire --expire=now --all
   git -C "$DEST" gc --aggressive --prune=now
 fi
