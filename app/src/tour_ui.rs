@@ -13,6 +13,7 @@ enum TourArt {
     Window,
     Traffic,
     Inspector,
+    Live,
     Composer,
     MapLocal,
     Breakpoint,
@@ -114,6 +115,21 @@ const TOUR_STEPS: &[TourStep] = &[
             "Right panel · action row + tabs",
             View::Traffic,
             TourArt::Inspector,
+        )
+    },
+    TourStep {
+        ..tour_step(
+            "LIVE CAPTURE",
+            "Connect devices or an isolated browser",
+            "Live Capture detects mobile simulators, emulators, and phones, and launches an Isolated Browser Session using the CA's SPKI Fingerprint without touching system proxies.",
+            &[
+                "Isolated Browser Session launches Chromium with scoped flags — no OS proxy mutation.",
+                "Read-only Certificate Portal at http://proxzy.internal/ or .local serves the local CA.",
+                "Start or stop the listener, pause recording, or clear sample rows at any time.",
+            ],
+            "Tools -> Live Capture",
+            View::Live,
+            TourArt::Live,
         )
     },
     TourStep {
@@ -256,11 +272,11 @@ const TOUR_STEPS: &[TourStep] = &[
         ..tour_step(
             "FINISH",
             "You have seen the whole lab",
-            "Start with All Traffic for capture, Map Local for mocking, Breakpoints for interception, and Agent Control when an AI agent or IDE needs a hook.",
+            "Start with Live Capture for Isolated Browser Session or mobile onboarding, Map Local for mocking, Breakpoints for editing, and Agent Control for IDE/agent hooks.",
             &[
                 "Replay this tour from the Tutorial page or the top-bar chip.",
-                "Guide & Stack explains certificates and device setup.",
-                "Nothing is locked behind an account or trial.",
+                "Guide & Stack covers Isolated Browser trust, device setup, and CA removal.",
+                "Remove the local CA from Keychain or device settings whenever you are done.",
             ],
             "Tools -> Guide & Stack",
             View::Guide,
@@ -423,7 +439,7 @@ impl App {
                                     ui.add_space(3.0);
                                     ui.label(
                                         RichText::new(format!(
-                                            "{} short stops. The app switches to each page, dims the background, and points at the part that matters. Traffic, Inspector, Composer, Map Local, Breakpoints, Logs, Agent Control, the IDE hook, ACP Bridge, Test Bench, Screen Play and the Guide.",
+                                            "{} short stops. The app switches to each page, dims the background, and points at the part that matters: Traffic, Inspector, Live Capture (Isolated Browser Session & devices), Composer, Map Local, Breakpoints, Logs, Agent Control, the IDE hook, ACP Bridge, Test Bench, Screen Play and the Guide (with CA removal).",
                                             stop_count
                                         ))
                                         .size(11.5)
@@ -535,6 +551,7 @@ impl App {
                         &[
                             ("All Traffic", "Live rows, filters and search"),
                             ("Inspector", "Copy URL / cURL, Share, Repeat"),
+                            ("Live Capture", "Isolated Browser Session, devices & CA portal"),
                             ("Composer", "Write REST or GraphQL requests"),
                         ],
                         &mut start_tour,
@@ -580,7 +597,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(
-                            "Prefer reading? Guide & Stack covers the local CA, simulators and the stack.",
+                            "Prefer reading? Guide & Stack covers Isolated Browser Session setup, device CAs, CA removal and the stack.",
                         )
                         .size(10.5)
                         .color(MUTED),
@@ -1064,17 +1081,18 @@ fn tour_art(ui: &mut Ui, art: TourArt, size: Vec2) {
     // Rail rows with one highlighted item for the current page.
     let highlight = match art {
         TourArt::Traffic | TourArt::Inspector => 0,
-        TourArt::Composer => 1,
-        TourArt::MapLocal => 2,
-        TourArt::Breakpoint => 3,
-        TourArt::Logs => 4,
-        TourArt::Agent | TourArt::AgentHook => 5,
-        TourArt::Acp => 6,
-        TourArt::Tests => 7,
-        TourArt::Screen => 8,
-        _ => 9,
+        TourArt::Live => 1,
+        TourArt::Composer => 2,
+        TourArt::MapLocal => 3,
+        TourArt::Breakpoint => 4,
+        TourArt::Logs => 5,
+        TourArt::Agent | TourArt::AgentHook => 6,
+        TourArt::Acp => 7,
+        TourArt::Tests => 8,
+        TourArt::Screen => 9,
+        _ => 10,
     };
-    for i in 0..9 {
+    for i in 0..10 {
         let y = rail.top() + 12.0 + i as f32 * 9.5;
         if i == highlight {
             p.rect_filled(
@@ -1292,6 +1310,146 @@ fn tour_art(ui: &mut Ui, art: TourArt, size: Vec2) {
                 "REPEAT",
                 FontId::proportional(5.8),
                 TEXT,
+            );
+        }
+        TourArt::Live => {
+            p.text(
+                egui::pos2(x, y + 2.0),
+                Align2::LEFT_CENTER,
+                "Live Capture",
+                FontId::proportional(8.2),
+                TEXT,
+            );
+            let status_pill = Rect::from_min_size(
+                egui::pos2(x + w - 44.0, y - 3.0),
+                Vec2::new(44.0, 10.0),
+            );
+            p.rect_filled(
+                status_pill,
+                3.0,
+                Color32::from_rgba_unmultiplied(61, 214, 149, 40),
+            );
+            p.text(
+                status_pill.center(),
+                Align2::CENTER_CENTER,
+                "PROXY ON",
+                FontId::monospace(4.6),
+                GREEN,
+            );
+
+            // Isolated Browser Session card
+            let browser_card = Rect::from_min_size(
+                egui::pos2(x, y + 14.0),
+                Vec2::new(w, 34.0),
+            );
+            p.rect_filled(browser_card, 4.0, CARD);
+            p.rect_stroke(
+                browser_card,
+                4.0,
+                Stroke::new(1.0, Color32::from_rgba_unmultiplied(88, 140, 255, 70)),
+            );
+            p.circle_filled(egui::pos2(x + 9.0, y + 24.0), 2.3, ACCENT);
+            p.text(
+                egui::pos2(x + 15.0, y + 24.0),
+                Align2::LEFT_CENTER,
+                "Isolated Browser Session",
+                FontId::proportional(6.0),
+                TEXT,
+            );
+            p.text(
+                egui::pos2(x + 9.0, y + 37.0),
+                Align2::LEFT_CENTER,
+                "--proxy-server + SPKI",
+                FontId::monospace(4.8),
+                CYAN,
+            );
+            let launch_btn = Rect::from_min_size(
+                egui::pos2(x + w - 40.0, y + 25.0),
+                Vec2::new(34.0, 12.0),
+            );
+            p.rect_filled(launch_btn, 3.0, ACCENT);
+            p.text(
+                launch_btn.center(),
+                Align2::CENTER_CENTER,
+                "Launch",
+                FontId::proportional(5.0),
+                TEXT,
+            );
+
+            // Detected Devices + Certificate Portal cards
+            let half = (w - 6.0) / 2.0;
+            let devices_card = Rect::from_min_size(
+                egui::pos2(x, y + 54.0),
+                Vec2::new(half, 40.0),
+            );
+            let portal_card = Rect::from_min_size(
+                egui::pos2(x + half + 6.0, y + 54.0),
+                Vec2::new(half, 40.0),
+            );
+            for r in [devices_card, portal_card] {
+                p.rect_filled(r, 4.0, CARD);
+            }
+            p.text(
+                egui::pos2(devices_card.left() + 7.0, devices_card.top() + 9.0),
+                Align2::LEFT_CENTER,
+                "Devices",
+                FontId::proportional(5.8),
+                TEXT,
+            );
+            p.circle_filled(
+                egui::pos2(devices_card.left() + 9.0, devices_card.top() + 21.0),
+                2.0,
+                GREEN,
+            );
+            p.text(
+                egui::pos2(devices_card.left() + 14.0, devices_card.top() + 21.0),
+                Align2::LEFT_CENTER,
+                "iOS / Android",
+                FontId::proportional(5.2),
+                MUTED,
+            );
+            p.line_segment(
+                [
+                    egui::pos2(devices_card.left() + 7.0, devices_card.top() + 31.0),
+                    egui::pos2(devices_card.right() - 8.0, devices_card.top() + 31.0),
+                ],
+                Stroke::new(1.1, FAINT),
+            );
+
+            p.text(
+                egui::pos2(portal_card.left() + 7.0, portal_card.top() + 9.0),
+                Align2::LEFT_CENTER,
+                "CA Portal",
+                FontId::proportional(5.8),
+                TEXT,
+            );
+            p.text(
+                egui::pos2(portal_card.left() + 7.0, portal_card.top() + 21.0),
+                Align2::LEFT_CENTER,
+                "proxzy.internal",
+                FontId::monospace(4.8),
+                GREEN,
+            );
+            p.text(
+                egui::pos2(portal_card.left() + 7.0, portal_card.top() + 31.0),
+                Align2::LEFT_CENTER,
+                ".local · /ca.pem",
+                FontId::monospace(4.6),
+                FAINT,
+            );
+
+            // Bottom Certificate Portal URL bar
+            p.rect_filled(
+                Rect::from_min_size(egui::pos2(x, y + 100.0), Vec2::new(w, 14.0)),
+                3.0,
+                INPUT,
+            );
+            p.text(
+                egui::pos2(x + 6.0, y + 107.0),
+                Align2::LEFT_CENTER,
+                "http://proxzy.internal/ca.cer",
+                FontId::monospace(4.9),
+                GREEN,
             );
         }
         TourArt::Composer => {
@@ -2048,6 +2206,11 @@ mod tour_tests {
                 "view {:?} has no tour stop",
                 view
             );
+            assert_eq!(
+                TOUR_STEPS[index].view, view,
+                "view {:?} resolved to wrong stop {:?}",
+                view, TOUR_STEPS[index].view
+            );
         }
     }
 
@@ -2074,7 +2237,28 @@ mod tour_tests {
     #[test]
     fn jumping_to_a_page_skips_the_welcome_stop() {
         assert_eq!(TOUR_STEPS[tour_index_for(View::Traffic)].art, TourArt::Traffic);
+        assert_eq!(TOUR_STEPS[tour_index_for(View::Live)].art, TourArt::Live);
         assert_eq!(TOUR_STEPS[tour_index_for(View::Agent)].art, TourArt::Agent);
         assert_eq!(TOUR_STEPS[tour_index_for(View::Guide)].art, TourArt::Done);
+    }
+
+    #[test]
+    fn live_capture_and_finish_stops_cover_v1_onboarding() {
+        let live = &TOUR_STEPS[tour_index_for(View::Live)];
+        assert_eq!(live.section, "LIVE CAPTURE");
+        assert_eq!(live.art, TourArt::Live);
+        assert!(live.body.contains("Isolated Browser Session"));
+        assert!(
+            live.bullets.iter().any(|b| b.contains("proxzy.internal")),
+            "Live Capture stop should mention proxzy.internal portal"
+        );
+
+        let guide = &TOUR_STEPS[tour_index_for(View::Guide)];
+        assert_eq!(guide.section, "FINISH");
+        assert!(
+            guide.body.contains("Isolated Browser Session")
+                && guide.bullets.iter().any(|b| b.contains("CA removal")),
+            "FINISH / Guide stop should mention Isolated Browser Session and CA removal"
+        );
     }
 }
