@@ -53,7 +53,7 @@ flowchart TB
 | `app/src/rules_ui.rs` | Included directly inside `app.rs` (`include!("rules_ui.rs")`). Map Local v2, Direct URL/cURL Hook bar, 3-Scenario switcher pills, Breakpoints v2 | `map_local_page_v2`, `map_editor_modal_v2`, `breakpoints_page_v2`, `bp_editor_modal_v2` |
 | `app/src/model.rs` | Pure data structures, 3-scenario state machine, session audit tracking, contract drift analyzer, cURL/URL parser, wildcard URL & domain matching, canonical fixture paths | `Capture`, `MapRule`, `MockScenario`, `TestSession`, `SessionCallAudit`, `ContractDriftReport`, `analyze_contract_drift`, `mock_versioned_fixture_path`, `ParsedCurl`, `parse_curl`, `pattern_matches_url`, `domain_matches` |
 | `app/src/proxy.rs` | Async Tokio TCP/TLS listener on `127.0.0.1:9090`, on-the-fly `rcgen` leaf cert signer, `/__proxzy/*` HTTP control plane, session audit lifecycle, Map Local & Breakpoint execution | `ProxyHandle`, `ProxyConfig`, `ProxyEvent`, `handle_proxzy_control`, `matching_map_rule`, `handle_https_connect` |
-| `app/src/devices.rs` | Background scanner for iOS Simulators (`xcrun simctl list devices -j`) and Android devices (`adb devices -l`) | `DeviceManager`, `MobileDevice`, `DevicePlatform` |
+| `app/src/devices.rs` | Background scanner for iOS Simulators (`xcrun simctl list devices`) and Android devices (`adb devices -l`) | `DeviceManager`, `MobileDevice`, `DevicePlatform` |
 | `app/src/theme.rs` | Color palette, method/status pills, macOS traffic lights, custom painted icons | `C`, `pill`, `method_badge`, `status_badge`, `toggle` |
 
 ---

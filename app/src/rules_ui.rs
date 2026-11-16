@@ -747,14 +747,28 @@ impl App {
                                 .rounding(9.0)
                                 .inner_margin(Margin::same(11.0))
                                 .show(ui, |ui| {
+                                    let host = self.screen_target_host();
+                                    let port = self.proxy_port;
+                                    let token = self.screen_target_token();
+                                    let token_ref = token.as_deref();
                                     ui.label(
                                         RichText::new(format!(
-                                            "Control hook active on http://127.0.0.1:{}/__proxzy/*",
-                                            self.proxy_port
+                                            "Control hook active on http://{}:{}/__proxzy/*",
+                                            host, port
                                         ))
                                         .font(mono(9.5))
                                         .color(GREEN),
                                     );
+                                    if let Some(tok) = token_ref {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "LAN token active — X-Proxzy-Control: {} included in snippets",
+                                                tok
+                                            ))
+                                            .font(mono(8.5))
+                                            .color(AMBER),
+                                        );
+                                    }
                                     ui.label(
                                         RichText::new(
                                             "MobileWright, mobile-mcp, XCTest, or curl can switch scenarios and verify hit counts live:",
@@ -763,19 +777,21 @@ impl App {
                                         .color(MUTED),
                                     );
                                     ui.add_space(6.0);
-                                    let port = self.proxy_port;
                                     ui.horizontal(|ui| {
                                         if secondary_button(ui, "Copy Health Check").clicked() {
                                             copy_text_action = Some((
-                                                format!("curl -s http://127.0.0.1:{}/__proxzy/health", port),
+                                                studio::health_curl_for(&host, port, token_ref),
                                                 "Copied /__proxzy/health curl command",
                                             ));
                                         }
                                         if secondary_button(ui, "Copy Scenario Switch").clicked() {
                                             copy_text_action = Some((
-                                                format!(
-                                                    "curl -s -X POST http://127.0.0.1:{}/__proxzy/scenario -d '{{\"pattern\":\"/v1/checkout\",\"scenario\":\"error\"}}'",
-                                                    port
+                                                studio::scenario_curl_for(
+                                                    &host,
+                                                    port,
+                                                    "/v1/checkout",
+                                                    "error",
+                                                    token_ref,
                                                 ),
                                                 "Copied /__proxzy/scenario curl command",
                                             ));
@@ -784,10 +800,7 @@ impl App {
                                     ui.add_space(4.0);
                                     if secondary_button(ui, "Copy Dynamic Mock Inject").clicked() {
                                         copy_text_action = Some((
-                                            format!(
-                                                "curl -s -X POST http://127.0.0.1:{}/__proxzy/mock -d '{{\"pattern\":\"https://api.shopwave.dev/v1/orders*\",\"scenario\":\"success\",\"status\":200,\"body\":\"{{\\\"ok\\\":true}}\"}}'",
-                                                port
-                                            ),
+                                            dynamic_mock_curl_for(&host, port, token_ref),
                                             "Copied /__proxzy/mock curl command",
                                         ));
                                     }
@@ -2240,4 +2253,17 @@ fn pattern_example(
             });
         }
     });
+}
+
+/// Build the sample `POST /__proxzy/mock` curl snippet for Map Local's UI Test Hook card.
+fn dynamic_mock_curl_for(host: &str, port: u16, control_token: Option<&str>) -> String {
+    let token_header = control_token
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| format!(" \\\n  -H 'X-Proxzy-Control: {}'", t))
+        .unwrap_or_default();
+    format!(
+        "curl -s -X POST http://{}:{}/__proxzy/mock{} \\\n  -H 'content-type: application/json' \\\n  -d '{{\"pattern\":\"https://api.shopwave.dev/v1/orders*\",\"scenario\":\"success\",\"status\":200,\"body\":\"{{\\\"ok\\\":true}}\"}}'",
+        host, port, token_header
+    )
 }

@@ -2026,35 +2026,227 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
         return make_response(200, "OK", headers, json.into_bytes());
     }
 
+    fn json_top_level_raw<'a>(json: &'a str, target_key: &str) -> Option<&'a str> {
+        let bytes = json.as_bytes();
+        let mut i = 0;
+        let skip_ws = |idx: &mut usize| {
+            while *idx < bytes.len() && bytes[*idx].is_ascii_whitespace() {
+                *idx += 1;
+            }
+        };
+        let skip_string = |idx: &mut usize| -> Option<()> {
+            if *idx >= bytes.len() || bytes[*idx] != b'"' {
+                return None;
+            }
+            *idx += 1;
+            while *idx < bytes.len() {
+                match bytes[*idx] {
+                    b'\\' => {
+                        *idx += 1;
+                        if *idx < bytes.len() {
+                            let ch_len = json[*idx..].chars().next()?.len_utf8();
+                            *idx += ch_len;
+                        }
+                    }
+                    b'"' => {
+                        *idx += 1;
+                        return Some(());
+                    }
+                    _ => {
+                        let ch_len = json[*idx..].chars().next()?.len_utf8();
+                        *idx += ch_len;
+                    }
+                }
+            }
+            None
+        };
+        skip_ws(&mut i);
+        if i >= bytes.len() || bytes[i] != b'{' {
+            return None;
+        }
+        i += 1;
+        loop {
+            skip_ws(&mut i);
+            if i >= bytes.len() || bytes[i] == b'}' {
+                return None;
+            }
+            if bytes[i] == b',' {
+                i += 1;
+                continue;
+            }
+            let key_start = i;
+            skip_string(&mut i)?;
+            let key_raw = &json[key_start..i];
+            let key_name = decode_json_string(key_raw)?;
+            skip_ws(&mut i);
+            if i >= bytes.len() || bytes[i] != b':' {
+                return None;
+            }
+            i += 1;
+            skip_ws(&mut i);
+            if i >= bytes.len() {
+                return None;
+            }
+            let val_start = i;
+            match bytes[i] {
+                b'"' => skip_string(&mut i)?,
+                b'{' | b'[' => {
+                    let mut depth = 0i32;
+                    while i < bytes.len() {
+                        match bytes[i] {
+                            b'"' => skip_string(&mut i)?,
+                            b'{' | b'[' => {
+                                depth += 1;
+                                i += 1;
+                            }
+                            b'}' | b']' => {
+                                depth -= 1;
+                                i += 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {
+                                let ch_len = json[i..].chars().next()?.len_utf8();
+                                i += ch_len;
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    while i < bytes.len()
+                        && bytes[i] != b','
+                        && bytes[i] != b'}'
+                        && !bytes[i].is_ascii_whitespace()
+                    {
+                        i += 1;
+                    }
+                }
+            }
+            let val_raw = &json[val_start..i];
+            if key_name == target_key {
+                return Some(val_raw);
+            }
+        }
+    }
+
+    fn decode_json_string(raw: &str) -> Option<String> {
+        let inner = raw.strip_prefix('"')?.strip_suffix('"')?;
+        let mut out = String::new();
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                match chars.next()? {
+                    'n' => out.push('\n'),
+                    'r' => out.push('\r'),
+                    't' => out.push('\t'),
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    '/' => out.push('/'),
+                    'u' => {
+                        let mut hex = String::with_capacity(4);
+                        for _ in 0..4 {
+                            hex.push(chars.next()?);
+                        }
+                        if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                            if let Some(ch) = char::from_u32(code) {
+                                out.push(ch);
+                            }
+                        }
+                    }
+                    other => {
+                        out.push('\\');
+                        out.push(other);
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        Some(out)
+    }
+
+    fn top_level_str(json: &str, key: &str) -> Option<String> {
+        let raw = json_top_level_raw(json, key)?;
+        if raw.starts_with('"') {
+            decode_json_string(raw)
+        } else if raw.starts_with('{') || raw.starts_with('[') {
+            Some(raw.to_string())
+        } else {
+            None
+        }
+    }
+
+    fn top_level_u16(json: &str, key: &str) -> Option<u16> {
+        json_top_level_raw(json, key)?.parse::<u16>().ok()
+    }
+
+    fn top_level_u64(json: &str, key: &str) -> Option<u64> {
+        json_top_level_raw(json, key)?.parse::<u64>().ok()
+    }
+
+    fn top_level_bool(json: &str, key: &str) -> Option<bool> {
+        match json_top_level_raw(json, key)? {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        }
+    }
+
     if req.method == "POST" && path == "/__proxzy/mock" {
-        let Some(pattern) = json_str_field(&body_text, "pattern")
-            .or_else(|| json_str_field(&body_text, "url"))
-        else {
+        let explicit_pattern = top_level_str(&body_text, "pattern")
+            .or_else(|| top_level_str(&body_text, "url"))
+            .filter(|s| !s.trim().is_empty());
+        let parsed_curl = top_level_str(&body_text, "curl")
+            .and_then(|c| crate::model::parse_curl(&c));
+        let pattern = if let Some(p) = explicit_pattern {
+            p
+        } else if let Some(ref pc) = parsed_curl {
+            let base = pc.url.split('?').next().unwrap_or(&pc.url);
+            if pc.url.contains('?') {
+                format!("{}?*", base)
+            } else if base.ends_with('*') {
+                base.to_string()
+            } else {
+                format!("{}*", base)
+            }
+        } else {
             return make_response(
                 400,
                 "Bad Request",
                 headers,
-                br#"{"ok":false,"error":"Missing 'pattern' or 'url' field in JSON body"}"#.to_vec(),
+                br#"{"ok":false,"error":"Missing 'pattern', 'url', or valid 'curl' field in JSON body"}"#.to_vec(),
             );
         };
-        let folder = json_str_field(&body_text, "folder")
+        let folder = top_level_str(&body_text, "folder")
             .unwrap_or_else(|| {
                 extract_domain_from_pattern(&pattern).unwrap_or_else(|| "General".into())
             });
         let inject_map = json_inject_map(&body_text);
-        let scenario = json_str_field(&body_text, "scenario")
+        let scenario = top_level_str(&body_text, "scenario")
             .and_then(|s| MockScenario::from_slug(&s))
             .unwrap_or(MockScenario::Success);
-        let status = json_u16_field(&body_text, "status").unwrap_or_else(|| scenario.default_status());
-        let raw_body = json_str_field(&body_text, "body").unwrap_or_else(|| scenario.default_body());
-        let sanitize = !body_text.contains("\"sanitize\":false") && !body_text.contains("\"sanitize\": false");
-        let resp_body = if sanitize {
-            sanitize_mock_payload(&raw_body)
-        } else {
-            raw_body
+        let sanitize = top_level_bool(&body_text, "sanitize").unwrap_or(true);
+        let maybe_sanitize = |raw: String| -> String {
+            if sanitize {
+                sanitize_mock_payload(&raw)
+            } else {
+                raw
+            }
         };
-        let method = json_str_field(&body_text, "method")
-            .map(|m| match m.to_ascii_uppercase().as_str() {
+        let delay_ms_opt = top_level_u64(&body_text, "delay_ms");
+        let status_opt = top_level_u16(&body_text, "status");
+        let body_opt = top_level_str(&body_text, "body").map(maybe_sanitize);
+        let success_status_opt = top_level_u16(&body_text, "success_status");
+        let success_body_opt = top_level_str(&body_text, "success_body").map(maybe_sanitize);
+        let error_status_opt = top_level_u16(&body_text, "error_status");
+        let error_body_opt = top_level_str(&body_text, "error_body").map(maybe_sanitize);
+        let empty_status_opt = top_level_u16(&body_text, "empty_status");
+        let empty_body_opt = top_level_str(&body_text, "empty_body").map(maybe_sanitize);
+
+        let method = top_level_str(&body_text, "method")
+            .or_else(|| parsed_curl.as_ref().map(|pc| pc.method.clone()))
+            .map(|m| match m.trim().to_ascii_uppercase().as_str() {
                 "GET" => RuleMethod::Get,
                 "POST" => RuleMethod::Post,
                 "PUT" => RuleMethod::Put,
@@ -2062,25 +2254,103 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                 _ => RuleMethod::Any,
             })
             .unwrap_or(RuleMethod::Any);
-        let name = json_str_field(&body_text, "name")
+        let graphql_name = top_level_str(&body_text, "graphql_name")
+            .or_else(|| {
+                parsed_curl.as_ref().and_then(|pc| {
+                    crate::model::graphql_info(&pc.method, &pc.body).and_then(|g| {
+                        if g.operation == "Anonymous" {
+                            None
+                        } else {
+                            Some(g.operation)
+                        }
+                    })
+                })
+            })
+            .unwrap_or_default();
+        let name = top_level_str(&body_text, "name")
             .unwrap_or_else(|| format!("UI Test Mock ({})", pattern));
-        let app_version = json_str_field(&body_text, "app_version").unwrap_or_default();
-        let env = json_str_field(&body_text, "env").unwrap_or_default();
+        let app_version = top_level_str(&body_text, "app_version").unwrap_or_default();
+        let env = top_level_str(&body_text, "env").unwrap_or_default();
 
-        let (rule_id, fixture_path) = if let Ok(mut cfg) = ctx.config.write() {
+        let apply_slots = |rule: &mut MapRule| {
+            match scenario {
+                MockScenario::Success => {
+                    if let Some(s) = status_opt {
+                        rule.success_status = s;
+                    }
+                    if let Some(ref b) = body_opt {
+                        rule.success_body = b.clone();
+                    }
+                }
+                MockScenario::Error => {
+                    if let Some(s) = status_opt {
+                        rule.error_status = s;
+                    }
+                    if let Some(ref b) = body_opt {
+                        rule.error_body = b.clone();
+                    }
+                }
+                MockScenario::Empty => {
+                    if let Some(s) = status_opt {
+                        rule.empty_status = s;
+                    }
+                    if let Some(ref b) = body_opt {
+                        rule.empty_body = b.clone();
+                    }
+                }
+            }
+            if let Some(s) = success_status_opt {
+                rule.success_status = s;
+            }
+            if let Some(ref b) = success_body_opt {
+                rule.success_body = b.clone();
+            }
+            if let Some(s) = error_status_opt {
+                rule.error_status = s;
+            }
+            if let Some(ref b) = error_body_opt {
+                rule.error_body = b.clone();
+            }
+            if let Some(s) = empty_status_opt {
+                rule.empty_status = s;
+            }
+            if let Some(ref b) = empty_body_opt {
+                rule.empty_body = b.clone();
+            }
+            match scenario {
+                MockScenario::Success => {
+                    rule.status = rule.success_status;
+                    rule.body = rule.success_body.clone();
+                }
+                MockScenario::Error => {
+                    rule.status = rule.error_status;
+                    rule.body = rule.error_body.clone();
+                }
+                MockScenario::Empty => {
+                    rule.status = rule.empty_status;
+                    rule.body = rule.empty_body.clone();
+                }
+            }
+        };
+
+        let (rule_id, final_status, fixture_path) = if let Ok(mut cfg) = ctx.config.write() {
             cfg.map_enabled = true;
             if let Some(domain) = extract_domain_from_pattern(&pattern) {
                 if !cfg.ssl_allowlist.iter().any(|d| d.eq_ignore_ascii_case(&domain)) {
                     cfg.ssl_allowlist.push(domain);
                 }
             }
-            let (id, f_path) = if let Some(existing) = cfg.map_rules.iter_mut().find(|r| r.pattern == pattern) {
+            let (id, st, f_path) = if let Some(existing) = cfg.map_rules.iter_mut().find(|r| r.pattern == pattern) {
                 existing.switch_scenario(scenario);
-                existing.status = status;
-                existing.body = resp_body.clone();
                 existing.method = method;
                 existing.folder = folder;
                 existing.enabled = true;
+                if !graphql_name.is_empty() {
+                    existing.graphql_name = graphql_name;
+                }
+                if let Some(d) = delay_ms_opt {
+                    existing.delay_ms = d;
+                }
                 if !app_version.is_empty() {
                     existing.app_version = app_version.clone();
                 }
@@ -2090,21 +2360,8 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                 for (k, v) in &inject_map {
                     existing.inject_props.insert(k.clone(), v.clone());
                 }
-                match scenario {
-                    MockScenario::Success => {
-                        existing.success_status = status;
-                        existing.success_body = resp_body;
-                    }
-                    MockScenario::Error => {
-                        existing.error_status = status;
-                        existing.error_body = resp_body;
-                    }
-                    MockScenario::Empty => {
-                        existing.empty_status = status;
-                        existing.empty_body = resp_body;
-                    }
-                }
-                (existing.id, existing.fixture_versioned_path())
+                apply_slots(existing);
+                (existing.id, existing.status, existing.fixture_versioned_path())
             } else {
                 let next_id = cfg.map_rules.iter().map(|r| r.id).max().unwrap_or(0) + 1;
                 let mut rule = MapRule {
@@ -2113,32 +2370,20 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                     folder,
                     pattern: pattern.clone(),
                     method,
-                    status,
-                    body: resp_body.clone(),
+                    graphql_name,
                     enabled: true,
                     active_scenario: scenario,
                     inject_props: inject_map,
                     app_version: app_version.clone(),
                     env: env.clone(),
+                    delay_ms: delay_ms_opt.unwrap_or(20),
                     ..MapRule::default()
                 };
-                match scenario {
-                    MockScenario::Success => {
-                        rule.success_status = status;
-                        rule.success_body = resp_body;
-                    }
-                    MockScenario::Error => {
-                        rule.error_status = status;
-                        rule.error_body = resp_body;
-                    }
-                    MockScenario::Empty => {
-                        rule.empty_status = status;
-                        rule.empty_body = resp_body;
-                    }
-                }
+                apply_slots(&mut rule);
+                let st = rule.status;
                 let fix_p = rule.fixture_versioned_path();
                 cfg.map_rules.insert(0, rule);
-                (next_id, fix_p)
+                (next_id, st, fix_p)
             };
             let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(Box::new(cfg.clone())));
             let _ = ctx.tx.send(ProxyEvent::Log {
@@ -2147,12 +2392,12 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                     "Control Hook upserted mock '{}' ({} {})",
                     pattern,
                     scenario.label(),
-                    status
+                    st
                 ),
             });
-            (id, f_path)
+            (id, st, f_path)
         } else {
-            (0, String::new())
+            (0, scenario.default_status(), String::new())
         };
 
         let json = format!(
@@ -2160,7 +2405,7 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
             rule_id,
             escape_json(&pattern),
             scenario.slug(),
-            status,
+            final_status,
             escape_json(&app_version),
             escape_json(&env),
             escape_json(&fixture_path)
@@ -2244,22 +2489,32 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
     }
 
     if req.method == "POST" && path == "/__proxzy/reset" {
+        let clear_rules = top_level_bool(&body_text, "clear_rules").unwrap_or(false);
         if let Ok(mut cfg) = ctx.config.write() {
-            for r in &mut cfg.map_rules {
-                r.hits = 0;
+            if clear_rules {
+                cfg.map_rules.clear();
+                cfg.map_enabled = false;
+            } else {
+                for r in &mut cfg.map_rules {
+                    r.hits = 0;
+                    r.inject_props.clear();
+                }
             }
             let _ = ctx.tx.send(ProxyEvent::RemoteConfigUpdated(Box::new(cfg.clone())));
             let _ = ctx.tx.send(ProxyEvent::Log {
                 level: "Info".into(),
-                message: "Control Hook reset all mock hit counters".into(),
+                message: if clear_rules {
+                    "Control Hook cleared all mock rules and injected properties".into()
+                } else {
+                    "Control Hook reset all mock hit counters and injected properties".into()
+                },
             });
         }
-        return make_response(
-            200,
-            "OK",
-            headers,
-            br#"{"ok":true,"action":"reset"}"#.to_vec(),
+        let json = format!(
+            "{{\"ok\":true,\"action\":\"reset\",\"clear_rules\":{}}}",
+            clear_rules
         );
+        return make_response(200, "OK", headers, json.into_bytes());
     }
 
     make_response(
@@ -3302,6 +3557,203 @@ mod proxy_tests {
             let cfg = ctx.config.read().unwrap();
             assert!(cfg.active_session.is_none());
         }
+    }
+
+    fn test_control_ctx() -> ConnCtx {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let key = KeyPair::generate().unwrap();
+        let params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let ca = Arc::new(Ca {
+            cert_pem: cert.pem(),
+            key,
+            cert,
+            info: CaInfo {
+                dir: PathBuf::new(),
+                pem_path: PathBuf::new(),
+                cer_path: PathBuf::new(),
+                fingerprint: String::new(),
+            },
+        });
+        ConnCtx {
+            config: Arc::new(RwLock::new(ProxyConfig::default())),
+            decisions: Arc::new(Mutex::new(HashMap::new())),
+            paused: Arc::new(Mutex::new(Vec::new())),
+            notify: Arc::new(Notify::new()),
+            tx,
+            ca,
+            shutdown: Arc::new(AtomicBool::new(false)),
+            binding: Arc::new(ListenerBinding {
+                bind_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 9090,
+                policy: BindPolicy::LoopbackOnly,
+            }),
+        }
+    }
+
+    #[test]
+    fn control_hook_reset_clears_inject_props_by_default_and_clears_rules_when_requested() {
+        let ctx = test_control_ctx();
+
+        for pat in [
+            "https://api.shopwave.dev/v1/orders*",
+            "https://api.shopwave.dev/v1/profile*",
+        ] {
+            let req = HttpRequest {
+                method: "POST".into(),
+                target: "/__proxzy/mock".into(),
+                headers: Vec::new(),
+                body: format!("{{\"pattern\":\"{}\",\"status\":200,\"body\":\"{{\\\"ok\\\":true}}\"}}", pat)
+                    .into_bytes(),
+            };
+            assert_eq!(handle_proxzy_control(&req, "/__proxzy/mock", &ctx).status, 200);
+        }
+
+        let inject_req = HttpRequest {
+            method: "POST".into(),
+            target: "/__proxzy/inject".into(),
+            headers: Vec::new(),
+            body: br#"{"pattern":"https://api.shopwave.dev/v1/orders*","inject":{"USERNAME":"qa.agent"}}"#.to_vec(),
+        };
+        assert_eq!(handle_proxzy_control(&inject_req, "/__proxzy/inject", &ctx).status, 200);
+        {
+            let mut cfg = ctx.config.write().unwrap();
+            cfg.map_rules[0].hits = 3;
+            cfg.map_rules[1].hits = 2;
+        }
+
+        // Default /__proxzy/reset (omitted clear_rules) resets hits & inject_props, keeps rules.
+        let reset_default_req = HttpRequest {
+            method: "POST".into(),
+            target: "/__proxzy/reset".into(),
+            headers: Vec::new(),
+            body: b"{}".to_vec(),
+        };
+        let reset_default_resp = handle_proxzy_control(&reset_default_req, "/__proxzy/reset", &ctx);
+        assert_eq!(reset_default_resp.status, 200);
+        assert!(String::from_utf8_lossy(&reset_default_resp.body).contains("\"clear_rules\":false"));
+        {
+            let cfg = ctx.config.read().unwrap();
+            assert!(cfg.map_enabled);
+            assert_eq!(cfg.map_rules.len(), 2);
+            assert!(cfg.map_rules.iter().all(|r| r.hits == 0 && r.inject_props.is_empty()));
+        }
+
+        // Explicit clear_rules: false also keeps rules and clears hits/inject_props.
+        assert_eq!(handle_proxzy_control(&inject_req, "/__proxzy/inject", &ctx).status, 200);
+        let reset_false_req = HttpRequest {
+            method: "POST".into(),
+            target: "/__proxzy/reset".into(),
+            headers: Vec::new(),
+            body: br#"{"clear_rules":false}"#.to_vec(),
+        };
+        let reset_false_resp = handle_proxzy_control(&reset_false_req, "/__proxzy/reset", &ctx);
+        assert_eq!(reset_false_resp.status, 200);
+        {
+            let cfg = ctx.config.read().unwrap();
+            assert_eq!(cfg.map_rules.len(), 2);
+            assert!(cfg.map_rules.iter().all(|r| r.hits == 0 && r.inject_props.is_empty()));
+        }
+
+        // Explicit clear_rules: true deletes all rules and resets map_enabled cleanly.
+        let reset_clear_req = HttpRequest {
+            method: "POST".into(),
+            target: "/__proxzy/reset".into(),
+            headers: Vec::new(),
+            body: br#"{"clear_rules":true}"#.to_vec(),
+        };
+        let reset_clear_resp = handle_proxzy_control(&reset_clear_req, "/__proxzy/reset", &ctx);
+        assert_eq!(reset_clear_resp.status, 200);
+        assert!(String::from_utf8_lossy(&reset_clear_resp.body).contains("\"clear_rules\":true"));
+        {
+            let cfg = ctx.config.read().unwrap();
+            assert!(cfg.map_rules.is_empty());
+            assert!(!cfg.map_enabled);
+        }
+    }
+
+    #[test]
+    fn control_hook_mock_supports_curl_delay_ms_and_multi_slot_overrides() {
+        let ctx = test_control_ctx();
+
+        let mock_req = HttpRequest {
+            method: "POST".into(),
+            target: "/__proxzy/mock".into(),
+            headers: Vec::new(),
+            body: br#"{"curl":"curl -X POST https://api.example.com/v1/wallet/transfer?dry=1 -H 'Authorization: Bearer tok' -d '{\"amount\":100}'","folder":"Wallet","delay_ms":250,"scenario":"success","success_status":201,"success_body":"{\"status\":\"ok\",\"token\":\"raw-secret-jwt-123456\"}","error_status":503,"error_body":"{\"error\":\"upstream_timeout\"}","empty_status":204,"empty_body":""}"#.to_vec(),
+        };
+        let resp = handle_proxzy_control(&mock_req, "/__proxzy/mock", &ctx);
+        assert_eq!(resp.status, 200);
+        let resp_str = String::from_utf8_lossy(&resp.body);
+        assert!(resp_str.contains("\"status\":201"));
+
+        {
+            let cfg = ctx.config.read().unwrap();
+            assert_eq!(cfg.map_rules.len(), 1);
+            let r = &cfg.map_rules[0];
+            assert_eq!(r.method.label(), "POST");
+            assert_eq!(r.pattern, "https://api.example.com/v1/wallet/transfer?*");
+            assert_eq!(r.folder, "Wallet");
+            assert_eq!(r.delay_ms, 250);
+            assert_eq!(r.status, 201);
+            assert_eq!(r.success_status, 201);
+            assert!(!r.success_body.contains("raw-secret-jwt-123456"));
+            assert_eq!(r.error_status, 503);
+            assert_eq!(r.error_body, "{\"error\":\"upstream_timeout\"}");
+            assert_eq!(r.empty_status, 204);
+            assert_eq!(r.empty_body, "");
+            assert!(cfg.ssl_allowlist.contains(&"api.example.com".to_string()));
+        }
+
+        // Switching to error/empty reflects the explicit slot overrides.
+        let err_req = HttpRequest {
+            method: "POST".into(),
+            target: "/__proxzy/scenario".into(),
+            headers: Vec::new(),
+            body: br#"{"pattern":"https://api.example.com/v1/wallet/transfer?*","scenario":"error"}"#.to_vec(),
+        };
+        assert_eq!(handle_proxzy_control(&err_req, "/__proxzy/scenario", &ctx).status, 200);
+        {
+            let cfg = ctx.config.read().unwrap();
+            assert_eq!(cfg.map_rules[0].status, 503);
+            assert_eq!(cfg.map_rules[0].body, "{\"error\":\"upstream_timeout\"}");
+        }
+
+        let empty_req = HttpRequest {
+            method: "POST".into(),
+            target: "/__proxzy/scenario".into(),
+            headers: Vec::new(),
+            body: br#"{"pattern":"https://api.example.com/v1/wallet/transfer?*","scenario":"empty"}"#.to_vec(),
+        };
+        assert_eq!(handle_proxzy_control(&empty_req, "/__proxzy/scenario", &ctx).status, 200);
+        {
+            let cfg = ctx.config.read().unwrap();
+            assert_eq!(cfg.map_rules[0].status, 204);
+            assert_eq!(cfg.map_rules[0].body, "");
+        }
+
+        // sanitize: false preserves raw payload without redacting.
+        let raw_req = HttpRequest {
+            method: "POST".into(),
+            target: "/__proxzy/mock".into(),
+            headers: Vec::new(),
+            body: br#"{"pattern":"https://api.example.com/v1/raw","sanitize":false,"success_body":"{\"token\":\"keep-me\"}"}"#.to_vec(),
+        };
+        assert_eq!(handle_proxzy_control(&raw_req, "/__proxzy/mock", &ctx).status, 200);
+        {
+            let cfg = ctx.config.read().unwrap();
+            let raw_rule = cfg.map_rules.iter().find(|r| r.pattern == "https://api.example.com/v1/raw").unwrap();
+            assert!(raw_rule.success_body.contains("keep-me"));
+        }
+
+        // Missing pattern/url and invalid/blank curl returns 400.
+        let bad_req = HttpRequest {
+            method: "POST".into(),
+            target: "/__proxzy/mock".into(),
+            headers: Vec::new(),
+            body: br#"{"curl":"   "}"#.to_vec(),
+        };
+        assert_eq!(handle_proxzy_control(&bad_req, "/__proxzy/mock", &ctx).status, 400);
     }
 
     fn lan_binding(token: &str) -> ListenerBinding {
