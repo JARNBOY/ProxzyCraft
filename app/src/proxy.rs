@@ -3622,6 +3622,7 @@ mod proxy_tests {
                 pem_path: PathBuf::new(),
                 cer_path: PathBuf::new(),
                 fingerprint: String::new(),
+                spki_fingerprint: String::new(),
             },
         });
         ConnCtx {
