@@ -1,6 +1,6 @@
-# ProxzyCraft v1.0.0 &mdash; Safe Native Network Inspector &amp; Autonomous E2E Mock Engine
+# ProxzyCraft v1.0.1 &mdash; Safe Native Network Inspector &amp; Autonomous E2E Mock Engine
 
-[![Release](https://img.shields.io/badge/version-v1.0.0-blue.svg?style=flat-square)](app/Cargo.toml)
+[![Release](https://img.shields.io/badge/version-v1.0.1-blue.svg?style=flat-square)](app/Cargo.toml)
 [![Rust](https://img.shields.io/badge/language-Rust_2021-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![Tokio](https://img.shields.io/badge/async-Tokio_1-blue.svg?style=flat-square)](https://tokio.rs)
 [![egui](https://img.shields.io/badge/gui-egui_0.29-lightgrey.svg?style=flat-square)](https://github.com/emilk/egui)

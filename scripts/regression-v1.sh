@@ -2,7 +2,7 @@
 # Unified v1.0.0 pre-release regression gate for ProxzyCraft.
 #
 # Verifies:
-#   1. Version parity (app/Cargo.toml == 1.0.0 and packages/proxzy-client/package.json == 1.0.0)
+#   1. Version parity (app/Cargo.toml == 1.0.1 and packages/proxzy-client/package.json == 1.0.1)
 #   2. Full Rust unit & integration test suite (cargo test)
 #   3. Compiled binary + TypeScript typecheck (when tsc is available) + live headless E2E via @proxzy/client
 #   4. Clean Release export hygiene + leak assertions + offline cargo check in exported tree
@@ -33,7 +33,7 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-EXPECTED_VERSION="1.0.0"
+EXPECTED_VERSION="1.0.1"
 
 TMP_DIR=""
 cleanup() {
