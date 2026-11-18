@@ -1773,6 +1773,21 @@ impl App {
                                             });
                                         });
                                     });
+                                    ui.add_space(5.0);
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new("DELAY PRESET")
+                                                .size(8.5)
+                                                .strong()
+                                                .color(FAINT),
+                                        );
+                                        for (ms, label) in DELAY_PRESETS_MS {
+                                            let active = ed.delay.trim() == ms.to_string();
+                                            if chip(ui, label, active).clicked() {
+                                                ed.delay = ms.to_string();
+                                            }
+                                        }
+                                    });
                                     ui.add_space(8.0);
                                     section_label(ui, "GraphQL filter & local fixture");
                                     ui.add_space(3.0);
@@ -1852,6 +1867,13 @@ impl App {
                                                         ed.local_file.clear();
                                                     }
                                                 });
+                                                if meta.len() > MAP_LOCAL_LARGE_FILE_BYTES {
+                                                    ui.label(
+                                                        RichText::new("File is bigger than 20 MB — the original warns this can impact performance.")
+                                                            .size(9.5)
+                                                            .color(AMBER),
+                                                    );
+                                                }
                                             }
                                             Err(_) => {
                                                 ui.horizontal(|ui| {

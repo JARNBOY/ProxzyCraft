@@ -441,8 +441,17 @@ pub struct App {
     composer_curl_input: String,
     composer_tab: ComposerTab,
     composer_response: Option<ComposerResponse>,
+    /// Compose request timeout in seconds; 0 means no timeout. The original's
+    /// default is 30 s with 15 / 30 / 60 / off presets.
+    composer_timeout: u64,
+    /// `isComposeFollowRedirects` is true on a fresh install (getter 0x43050),
+    /// so Compose passes `-L` to curl until the switch is turned off.
+    composer_follow_redirects: bool,
     pending_send: Option<Receiver<SendOutcome>>,
     breakpoint_session: Option<BreakpointSession>,
+    /// What "Abort" does on the paused breakpoint: drop the socket, 503 or 429.
+    /// The original exposes this as the "Abort by" menu in the pause window.
+    bp_abort_mode: AbortMode,
     map_editor: Option<MapEditor>,
     bp_editor: Option<BpEditor>,
     map_enabled: bool,
@@ -570,7 +579,13 @@ impl App {
         let mut lan_enabled = false;
         let mut control_token = String::new();
         let mut lan_ip = String::new();
-        for candidate in [proxy_port, 9090, 9091, 9092, 9093] {
+        for candidate in [
+            proxy_port,
+            DEFAULT_PROXY_PORT,
+            DEFAULT_PROXY_PORT + 1,
+            DEFAULT_PROXY_PORT + 2,
+            DEFAULT_PROXY_PORT + 3,
+        ] {
             match proxy::start_with_options(
                 proxy::ProxyStartOptions {
                     port: candidate,
@@ -632,8 +647,11 @@ impl App {
             composer_curl_input: String::new(),
             composer_tab: ComposerTab::Body,
             composer_response: None,
+            composer_timeout: DEFAULT_COMPOSE_TIMEOUT_SECS,
+            composer_follow_redirects: COMPOSE_FOLLOW_REDIRECTS_DEFAULT,
             pending_send: None,
             breakpoint_session: None,
+            bp_abort_mode: AbortMode::default(),
             map_editor: None,
             bp_editor: None,
             // Sample rules stay visible, but they must not rewrite or pause
@@ -998,7 +1016,13 @@ impl App {
         } else {
             Some(self.control_token.clone())
         };
-        for candidate in [self.proxy_port, 9090, 9091, 9092, 9093] {
+        for candidate in [
+            self.proxy_port,
+            DEFAULT_PROXY_PORT,
+            DEFAULT_PROXY_PORT + 1,
+            DEFAULT_PROXY_PORT + 2,
+            DEFAULT_PROXY_PORT + 3,
+        ] {
             match proxy::start_with_options(
                 proxy::ProxyStartOptions {
                     port: candidate,
@@ -2875,7 +2899,9 @@ impl App {
                     method: RuleMethod::Get,
                     status: "200".into(),
                     content_type: "application/json".into(),
-                    delay: "20".into(),
+                    // The original registers `mapLocalResponseDelay = 10` ms
+                    // (ProxymanCore 0x40c9c); a new rule starts there.
+                    delay: default_rule.delay_ms.to_string(),
                     body: default_body.clone(),
                     local_file: String::new(),
                     graphql_name: String::new(),
@@ -2973,7 +2999,11 @@ impl App {
             } else {
                 ed.content_type.trim().to_string()
             },
-            delay_ms: ed.delay.trim().parse::<u64>().unwrap_or(0),
+            delay_ms: ed
+                .delay
+                .trim()
+                .parse::<u64>()
+                .unwrap_or(DEFAULT_MAP_LOCAL_DELAY_MS),
             body: ed.body,
             local_file: ed.local_file.trim().to_string(),
             graphql_name: ed.graphql_name.trim().to_string(),
@@ -3314,18 +3344,28 @@ impl App {
         };
         if let Some(id) = s.live_bp_id {
             if let Some(handle) = &self.proxy {
-                handle.resolve(id, proxy::BpDecision::Abort);
+                handle.resolve(
+                    id,
+                    proxy::BpDecision::Abort {
+                        mode: self.bp_abort_mode,
+                    },
+                );
             }
             self.log(
                 Level::Warn,
                 "Breakpoints",
-                format!("Live request aborted by \"{}\"", s.rule_name),
+                format!(
+                    "Live request aborted by \"{}\" — {}",
+                    s.rule_name,
+                    self.bp_abort_mode.label()
+                ),
             );
             let until = ctx.input(|i| i.time) + 2.4;
-            self.toast = Some(Toast {
-                text: "Live request aborted — the app receives a 403".into(),
-                until,
-            });
+            let text = match self.bp_abort_mode.status() {
+                Some(code) => format!("Live request aborted — the app receives a {}", code),
+                None => "Live request aborted — the connection was dropped".into(),
+            };
+            self.toast = Some(Toast { text, until });
             return;
         }
         let c = Capture {
@@ -3479,8 +3519,18 @@ impl App {
         let url2 = url.clone();
         let headers2 = headers.clone();
         let body2 = body.clone();
+        let timeout = self.composer_timeout;
+        let follow_redirects = self.composer_follow_redirects;
         std::thread::spawn(move || {
-            let outcome = run_curl(&method2, &url2, &headers2, &body2, None);
+            let outcome = run_curl(
+                &method2,
+                &url2,
+                &headers2,
+                &body2,
+                None,
+                timeout,
+                follow_redirects,
+            );
             let _ = tx.send(outcome);
             ctx2.request_repaint();
         });
@@ -5090,7 +5140,11 @@ impl App {
                 self.copy(ctx, c.url.clone(), "URL copied to clipboard");
             }
             Some(Action::CopyCurl) => {
-                self.copy(ctx, c.curl(), "cURL command copied to clipboard");
+                self.copy(
+                    ctx,
+                    c.curl_with_proxy(Some(self.proxy_port)),
+                    "cURL command copied to clipboard",
+                );
             }
             Some(Action::CopyBody) => {
                 if c.req_body.is_empty() {
@@ -5429,7 +5483,7 @@ impl App {
     fn inspector_curl(&mut self, ui: &mut Ui, c: &Capture, action: &mut Option<Action>) {
         section_label(ui, "Shareable cURL");
         ui.add_space(5.0);
-        code_block(ui, &c.curl(), 260.0, false);
+        code_block(ui, &c.curl_with_proxy(Some(self.proxy_port)), 260.0, false);
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             if primary_button(ui, "Copy cURL").clicked() {
@@ -6259,6 +6313,8 @@ fn run_curl(
     headers: &[(String, String)],
     body: &str,
     proxy: Option<(u16, Option<std::path::PathBuf>)>,
+    timeout_secs: u64,
+    follow_redirects: bool,
 ) -> SendOutcome {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -6272,10 +6328,15 @@ fn run_curl(
     let _ = std::fs::write(&body_path, body);
 
     let mut cmd = std::process::Command::new("curl");
-    cmd.arg("-sS")
-        .arg("--max-time")
-        .arg("20")
-        .arg("-X")
+    cmd.arg("-sS");
+    // `isComposeFollowRedirects` defaults to true (ProxymanCore 0x43050).
+    if follow_redirects {
+        cmd.arg("-L");
+    }
+    if timeout_secs > 0 {
+        cmd.arg("--max-time").arg(timeout_secs.to_string());
+    }
+    cmd.arg("-X")
         .arg(method)
         .arg("-D")
         .arg(&header_path)

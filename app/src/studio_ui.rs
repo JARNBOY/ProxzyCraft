@@ -2115,7 +2115,15 @@ impl App {
         let ca = self.ca_info.as_ref().map(|ca| ca.pem_path.clone());
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            let outcome = run_curl(&method, &url, &headers, &body, Some((port, ca)));
+            let outcome = run_curl(
+                &method,
+                &url,
+                &headers,
+                &body,
+                Some((port, ca)),
+                DEFAULT_COMPOSE_TIMEOUT_SECS,
+                COMPOSE_FOLLOW_REDIRECTS_DEFAULT,
+            );
             let _ = tx.send(outcome);
         });
         self.test_send = Some(TestSend { index, rx });

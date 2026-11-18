@@ -159,6 +159,22 @@ impl App {
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(RichText::new("draft").size(9.5).color(FAINT));
+                    ui.add_space(6.0);
+                    for (secs, label) in [(0u64, "Off"), (60, "60 s"), (30, "30 s"), (15, "15 s")]
+                    {
+                        if chip(ui, label, self.composer_timeout == secs).clicked() {
+                            self.composer_timeout = secs;
+                        }
+                    }
+                    // `isComposeFollowRedirects` is on in the original's
+                    // defaults (ProxymanCore 0x43050).
+                    if chip(ui, "Follow ↻", self.composer_follow_redirects)
+                        .on_hover_text("Follow 3xx redirects, like the original's Automatically Follow Redirects switch (on by default).")
+                        .clicked()
+                    {
+                        self.composer_follow_redirects = !self.composer_follow_redirects;
+                    }
+                    ui.label(RichText::new("Timeout").size(9.5).color(FAINT));
                 });
             });
             ui.add_space(5.0);
@@ -304,9 +320,6 @@ impl App {
                 if secondary_button(ui, "Reset").clicked() {
                     self.set_composer_preset(true);
                 }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(RichText::new("20 s timeout").size(9.5).color(FAINT));
-                });
             });
         });
     }
@@ -1524,6 +1537,27 @@ impl App {
                                 ui.add_space(10.0);
                                 ui.horizontal(|ui| {
                                     ui.label(
+                                        RichText::new("ABORT BY")
+                                            .size(9.0)
+                                            .strong()
+                                            .color(FAINT),
+                                    );
+                                    for mode in AbortMode::ALL {
+                                        if chip(ui, mode.short_label(), self.bp_abort_mode == mode)
+                                            .clicked()
+                                        {
+                                            self.bp_abort_mode = mode;
+                                        }
+                                    }
+                                    ui.label(
+                                        RichText::new(self.bp_abort_mode.label())
+                                            .size(9.5)
+                                            .color(MUTED),
+                                    );
+                                });
+                                ui.add_space(10.0);
+                                ui.horizontal(|ui| {
+                                    ui.label(
                                         RichText::new("Changes are applied only inside this POC session.")
                                             .size(9.5)
                                             .color(FAINT),
@@ -1573,6 +1607,9 @@ impl App {
             let mut copy_link = false;
             let mut copy_md = false;
             let mut copy_curl = false;
+            let mut copy_httpie = false;
+            let mut copy_postman = false;
+            let mut copy_har = false;
             egui::Area::new(Id::new("share_dim"))
                 .order(egui::Order::Middle)
                 .fixed_pos(egui::Pos2::ZERO)
@@ -1585,7 +1622,7 @@ impl App {
                     );
                     ui.allocate_rect(rect, Sense::click());
                 });
-            let size = Vec2::new(560.0, 330.0);
+            let size = Vec2::new(560.0, 392.0);
             let rect = Rect::from_center_size(ctx.screen_rect().center(), size);
             egui::Area::new(Id::new("share_modal"))
                 .order(egui::Order::Foreground)
@@ -1598,7 +1635,7 @@ impl App {
                         .inner_margin(Margin::same(20.0))
                         .show(ui, |ui| {
                             ui.set_width(520.0);
-                            ui.set_height(290.0);
+                            ui.set_height(350.0);
                             ui.horizontal(|ui| {
                                 ui.label(
                                     RichText::new("Share request")
@@ -1661,17 +1698,53 @@ impl App {
                                         },
                                     );
                                 });
+                                ui.add_space(8.0);
+                                ui.label(
+                                    RichText::new("Copy as (like the original's code generator)")
+                                        .size(9.5)
+                                        .strong()
+                                        .color(FAINT),
+                                );
+                                ui.add_space(3.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    if secondary_button(ui, "HTTPie").clicked() {
+                                        copy_httpie = true;
+                                    }
+                                    if secondary_button(ui, "Postman 2.1").clicked() {
+                                        copy_postman = true;
+                                    }
+                                    if secondary_button(ui, "HAR").clicked() {
+                                        copy_har = true;
+                                    }
+                                    ui.label(
+                                        RichText::new("Full cURL is under Copy cURL.")
+                                            .size(9.0)
+                                            .color(FAINT),
+                                    );
+                                });
                             }
                         });
                 });
             if close {
                 self.share_open = false;
             }
-            if let Some(c) = c.filter(|_| copy_link || copy_md || copy_curl) {
+            if let Some(c) = c.filter(|_| {
+                copy_link || copy_md || copy_curl || copy_httpie || copy_postman || copy_har
+            }) {
                 if copy_link {
                     self.copy(ctx, c.share_link(), "Share link copied");
                 } else if copy_curl {
-                    self.copy(ctx, c.curl(), "cURL command copied");
+                    self.copy(
+                        ctx,
+                        c.curl_with_proxy(Some(self.proxy_port)),
+                        "cURL command copied",
+                    );
+                } else if copy_httpie {
+                    self.copy(ctx, c.httpie(), "HTTPie command copied");
+                } else if copy_postman {
+                    self.copy(ctx, c.postman_collection(), "Postman collection copied");
+                } else if copy_har {
+                    self.copy(ctx, c.har(), "HAR document copied");
                 } else {
                     let md = format!("`{}` [{}]({})", c.method, c.url, c.share_link());
                     self.copy(ctx, md, "Markdown share copied");

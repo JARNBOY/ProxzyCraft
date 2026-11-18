@@ -8,9 +8,9 @@
   },
   "stack": "Rust + egui (eframe)",
   "status": "ready",
-  "note": "Ready: all 2 checks pass. 6 questions about the original are still open.",
+  "note": "Ready: all 3 checks pass, 7 of 7 claims hold. 6 questions about the original are still open.",
   "created_ms": 1794210119144,
-  "updated_ms": 1794545202511,
+  "updated_ms": 1794994803521,
   "checks": [
     {
       "round": 1,
@@ -251,12 +251,71 @@
         "checks/round-12/screenshot.png"
       ],
       "at_ms": 1794545199869
+    },
+    {
+      "round": 13,
+      "check": "build",
+      "passed": true,
+      "similarity": null,
+      "note": "Build succeeded.",
+      "artifacts": [],
+      "at_ms": 1794994802132
+    },
+    {
+      "round": 13,
+      "check": "app-screenshot",
+      "passed": true,
+      "similarity": null,
+      "note": "The program starts and draws (2880×1664).",
+      "artifacts": [
+        "checks/round-13/screenshot.png"
+      ],
+      "at_ms": 1794994803500
+    },
+    {
+      "round": 13,
+      "check": "mechanics",
+      "passed": true,
+      "similarity": null,
+      "note": "app/mechanics.json has 29 values (29 with a source, 0 estimated).",
+      "artifacts": [],
+      "at_ms": 1794994803504,
+      "claims": [
+        {
+          "title": "proxy port (9090) is used in the code",
+          "passed": true
+        },
+        {
+          "title": "map local default delay (10) is used in the code",
+          "passed": true
+        },
+        {
+          "title": "map local fixture warning (20) is used in the code",
+          "passed": true
+        },
+        {
+          "title": "map local fixture auto-save (2) is used in the code",
+          "passed": true
+        },
+        {
+          "title": "compose default timeout (30) is used in the code",
+          "passed": true
+        },
+        {
+          "title": "compose editor tab size (2) is used in the code",
+          "passed": true
+        },
+        {
+          "title": "map local delay ceiling (60) is used in the code",
+          "passed": true
+        }
+      ]
     }
   ],
   "agent_session": null,
   "agent_session_by": "opencode",
   "allowed_actions": [],
-  "last_reply": "I'll start by looking at the evidence the workspace gives me and the current state of the investigation.The workspace already contains a working POC from earlier turns, and this request adds a new topic — an ACP/MCP agent plugin concept and a tutorial update. Let me look at what the app has now.The app already has an \"agent\" screen and a tutorial. Let me read the source around those to see what's there and what ACP content is missing.The attached pictures show the current app; the new work is the ACP concept and tutorial update. Let me map how a new screen plugs into navigation and the tutorial before writing code.I'll verify the ACP protocol details against its public documentation so the tutorial teaches the real method names, not invented ones.The ACP docs confirm the exact method flow. I'll build a dedicated ACP concept screen that plugs into the existing agent tooling, then extend the tour and fix its stop counts.Now I'll add the ACP concept model with accurate JSON-RPC messages, a permission gate and copy-ready setup text.Now I'll update the tutorial with the ACP stop, artwork, dynamic counts, and links.All 75 tests pass. Now I'll build and capture the ACP screen to inspect the layout.The screenshots reveal the default font can't render `→`/`↔` glyphs (they show as boxes). I'll switch the tutorial and ACP text to ASCII arrows.Implemented the ACP concept feature and tutorial update.\n\n**What changed**\n- Added **ACP Bridge** under *Automation & agents*, with a clear editor -> agent -> MCP tools -> Proxzy flow.\n- Built an interactive 11-message ACP v1 session lab (`initialize`, `session/new`, `session/prompt`, updates, permission request, `stopReason`).\n- Added a working permission gate with **Allow once**, **Always allow**, and **Reject**, including the correct stopped/refused outcome.\n- Added copy-ready **Editor config**, **MCP entry**, and **Agent prompt** templates.\n- Linked ACP Bridge from **Agent Control** and **Screen Play & MCP**.\n- Updated the tutorial to a **13-stop tour** with a dedicated ACP stop and matching illustration.\n- Documented the concept, demo triggers, and real-vs-simulated boundary.\n\n**Verification**\n- `cargo test`: **75 passed, 0 failed**\n- Build: clean, no warnings\n- Screenshots captured for the ACP page (pending, allowed, rejected), tutorial, tour, Agent Control, and Screen Play\n- `rebuild_check`: **would pass**\n\nThe ACP Bridge now sits beside Agent Control so you can see the other half of the agent story: how an editor starts and supervises an AI agent in the first place. It walks through a realistic session, pauses before a side effect, and lets you approve or reject it. The screen is a learning simulation rather than a live connection, and it clearly separates ACP from MCP so the two are not confused. The tutorial now includes this stop, so the guided tour covers the full setup from editor to tools.",
+  "last_reply": "I'll start by checking what's currently open in Craft Anything and what I built previously.Nothing is open. Let me find the tools I need and read the current mechanics sheet.Now let me open the original's main program in Deep mode.Now let me search for the settings names inside the main program.The settings keys aren't in the main executable. Let me look at what this binary actually contains.The engine and defaults live in `ProxymanCore`. Let me open that too.Now let me decompile. Starting with the two defaults functions.The defaults are confirmed. Now let me trace the feature code behind what I built.Let me index the function names to find the real implementations.Let me check what the build currently hard-codes.Now I'll wire the decompiled values into the build. Starting with the constants.I'll continue from where we left off: updating `app/MECHANICS.md` and `app/mechanics.json` with the newly decompiled mechanics, then verifying the build.Finished the deep-mode pass and wired every settled value into the build.\n\n## Decompiled in `ProxymanCore` (addresses recorded)\n\n| Address | Settled mechanic |\n| --- | --- |\n| `0xf34bc` | Defaults initialiser: port `0x2382` (9090), `composeTimeoutConfig = 0x1e` (30 s), `IncludeHTTPProxyCURL = 1`, `monacoEditorTabSize = 2`, `isComposeFollowRedirects = 1`, Gist redaction and memory clean-up on |\n| `0x40c9c` | Map Local delay default `mapLocalResponseDelay = 10` ms |\n| `0x42858` | Breakpoint abort raw `0` → Drop Connection |\n| `0x42f8c` | Compose timeout getter returns **30** |\n| `0x42960` | Editor tab size returns **2** |\n| `0x43050` | Follow redirects returns **true** |\n| `0x42e68` / `0x42e04` | Gist redaction / auto memory clean-up default **true** |\n| `0x421cc` | Map Local fixture auto-save default **true** |\n| `0x40a20` | Map Local folder default nil |\n| `0x1bb608` | 20 MB fixture check; exact message at `0xfb01b0` — \"File size is bigger than 20Mb could impact the performance!\" |\n| `0x2cd188` | cURL builder: always `--proxy http://localhost:<port>`, `--data-binary @-` / `@file`, multipart Content-Type, recomputed Content-Length |\n| `0x28fe9c` / `0x4bdd4` | GraphQL label uses `graphQLQueryName`, falls back to `<Missing Query Name>` |\n| `0x10aa192` | `DelayTimePreset`: 8 cases, last (`sixtySeconds`) at `0x10aa211` |\n\n## Code changes\n\n- `app/src/model.rs`: new constants for port, timeout, delay, tab size, 20 MB, follow-redirects and abort default; `curl_with_proxy`; 2-space indentation; `AbortMode::default` now derived from the decompiled raw value.\n- `app/src/app.rs`: `composer_follow_redirects` defaults on and passes `-L`; live proxy port used in the inspector; delay field uses the 10 ms default.\n- `app/src/views.rs`: \"Follow ↻\" chip in Composer; share-sheet cURL uses the live port.\n- `app/src/proxy.rs`: API-created rules default to 10 ms; delay ceiling is now 60 s (was 10 s).\n- `app/src/rules_ui.rs`: 20 MB check uses the constant.\n- `app/MECHANICS.md` + `app/mechanics.json`: added a \"Functions and tables read this pass\" table with all addresses and 7 new sourced values; corrected three older rows (preset list, redirects, auto-save).\n\n## Verification\n\n- `cargo build` clean, no warnings.\n- `cargo test` → **92 passed, 0 failed**.\n- `--screenshot app/shots/verify-mechanics.png` → 2880×1664, 1.55 MB, non-blank.\n- `rebuild_check` → build passed, screenshot passed, mechanics **29/29 sourced, 0 estimated**, \"This would pass.\"\n\nInvestigation memory updated with findings `fnd_6`–`fnd_11`, corrected `fnd_3`/`fnd_4`, new plan and handoff. Still open (documented, not silently dropped): exact original pixel layout, Local Directory tree mapping, live response-stage pause, regex mode, Gist publishing.",
   "asset_budget_usd": 5.0,
   "generate_assets": false,
   "builder": "OpenCode",

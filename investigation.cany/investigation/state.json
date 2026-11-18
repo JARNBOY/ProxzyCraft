@@ -1,53 +1,157 @@
 {
-  "revision": 49,
+  "revision": 69,
   "brief": {
-    "question": "How can a Proxyman-style desktop POC show live GraphQL and REST traffic with copy/share, repeat, Map Local (including a linked fixture file), Breakpoints and a Log Dashboard, so the person can learn how the pieces fit together?",
-    "purpose": "A learning POC for the person: inspect requests, copy a URL or cURL, repeat a call, answer an endpoint from Map Local, pause a real request at a breakpoint, and read one log dashboard for the session.",
+    "question": "How can a Proxyman-style desktop POC show live GraphQL and REST traffic with copy/share URL and cURL, repeat, Map Local (including a linked fixture file), Breakpoints and a Log Dashboard, and what are the original's real defaults and rules?",
+    "purpose": "The person wants to learn how Proxyman's Map Local, Breakpoint and Log dashboard pieces fit, and build a working POC in Rust/egui.",
     "targets": [
       "/Applications/Proxyman.app"
     ],
     "constraints": [
-      "Clean room: never open, list, read, run or decompile the target",
+      "Deep mode: the original may be opened and decompiled, but never run or modified",
       "Build only inside app/; everything else is read-only",
       "Rust + eframe/egui; build must succeed and --screenshot must produce a non-blank PNG",
       "Never change host macOS proxy settings without explicit confirmation"
     ],
-    "done_when": "The app builds, draws a real window, captures or simulates GraphQL and REST calls, copies URL/cURL, repeats, serves Map Local from inline JSON or a linked file, pauses at request/response breakpoints, shows a log dashboard, passes its tests, and rebuild_check reports it would pass."
+    "done_when": "The app builds, draws a real window, captures or simulates GraphQL and REST calls, copies URL/cURL, repeats, serves Map Local from inline JSON or a linked file, pauses at breakpoints, shows a log dashboard, passes its tests, and rebuild_check reports it would pass."
   },
   "plan": [
     {
-      "title": "Check what the app already does",
+      "title": "Read the original's menus, tables and defaults",
       "status": "done",
-      "why": "The app already had Agent Control, MCP snippets and a 12-stop tour; the ACP gap is now filled."
+      "why": "ProxymanCore defaults initialiser 0xf34bc and the English .strings tables fix the port, compose timeout, abort menu, copy formats and rule order."
     },
     {
-      "title": "Learn the real ACP handshake",
+      "title": "Write the mechanics sheet and JSON",
       "status": "done",
-      "why": "Public ACP docs fixed the method names, message shapes and permission flow."
+      "why": "app/MECHANICS.md and app/mechanics.json now record 29 values, every one with a source."
     },
     {
-      "title": "Build the ACP Bridge screen",
+      "title": "Add the Breakpoint Abort-by modes",
       "status": "done",
-      "why": "The screen has an interactive session lab, permission gate, protocol checks and copy-ready setup."
+      "why": "Drop / 503 / 429, with Drop as the original's default; the proxy drops the socket or answers a JSON error."
     },
     {
-      "title": "Connect ACP to the agent tools",
+      "title": "Add Compose timeout, share formats and Map Local delay presets",
       "status": "done",
-      "why": "Agent Control and Screen Play now link to ACP Bridge, and the sidebar/palette expose it."
+      "why": "15/30/60/Off timeout passed to curl, HTTPie/Postman/HAR in the share sheet, the original's eight delay presets plus a 20 MB fixture warning."
     },
     {
-      "title": "Update the tutorial and counts",
+      "title": "Decompile the per-key getters and the cURL/label builders",
       "status": "done",
-      "why": "The tour now has 13 stops, an ACP stop with its own art, and dynamic counts; tests cover it."
+      "why": "0x42858, 0x42f8c, 0x42960, 0x43050, 0x42e68, 0x42e04, 0x421cc and 0x40a20 settle the defaults; 0x2cd188 and 0x28fe9c settle cURL and GraphQL labels."
     },
     {
-      "title": "Build, test and check the picture",
+      "title": "Apply the decompiled values in the Rust POC",
       "status": "done",
-      "why": "75 tests pass, the build is clean, screenshots were recaptured and rebuild_check says it would pass."
+      "why": "New model constants, live proxy in cURL, -L follow-redirects default, 2-space indentation, 10 ms delay default, 60 s ceiling, 20 MB threshold."
+    },
+    {
+      "title": "Build, test and photograph the new controls",
+      "status": "done",
+      "why": "Clean build, 92 tests pass, and verify-mechanics.png confirms the Follow chip and inspector draw."
+    },
+    {
+      "title": "Check the build against the original and update the handoff",
+      "status": "done",
+      "why": "rebuild_check reports build, screenshot and mechanics all passed (29 sourced values), and says this would pass."
     }
   ],
   "hypotheses": [],
-  "findings": [],
-  "handoff": "DONE: Proxzy now has an ACP Bridge concept screen under Automation & agents, reachable from the sidebar, the command palette, Agent Control's Hook an IDE card and Screen Play's harness card. The screen explains editor -> ACP -> agent -> MCP -> tools -> Proxzy, runs an 11-message simulated ACP v1 session (initialize, session/new, session/prompt, session/update, session/request_permission, stopReason), stops at a permission gate with Allow once / Always allow / Reject, and offers copy-ready Editor config, MCP entry and Agent prompt tabs. The tutorial is now a 13-stop tour with a dedicated ACP stop and drawing after the IDE hook; all counts are dynamic and tests cover the order. README documents the screen, triggers, layout files and the real-vs-simulated boundary. VERIFIED: cargo test 75 passed / 0 failed; cargo build clean with no warnings; screenshots app/shots/acp.png, acp-full.png, acp-deny.png, tour-acp.png, tutorial.png, screen.png, agent.png, agent-hook.png; latest rebuild_check says 'This would pass.' TRAPS: views.rs, rules_ui.rs, studio_ui.rs, tour_ui.rs, acp.rs and acp_ui.rs are include!d from app.rs, never add mod declarations; the built binary is target/debug/proxzy (app/target is stale); run screenshots from the repo root; never open /Applications/Proxyman.app or run networksetup without explicit confirmation. Demo triggers: PROXZY_VIEW=acp; PROXZY_DEMO=acp-replay|acp-full|acp-deny|tour-acp|agent-hook. UNKNOWNS: whether the original has an ACP/MCP plugin screen is blocked by the clean-room rule (unk_452c04cf513addd2); real ACP stdio is a deliberate later scope (resolved, unk_4b0b6279ea9c0cdf); the pre-existing visual/scope unknowns remain blocked. NEXT: no code work required unless the person wants a real ACP stdio bridge or supplies an original plugin-screen capture.",
-  "updated": "2026-11-13T04:45:45Z"
+  "findings": [
+    {
+      "id": "fnd_1",
+      "statement": "The original registers its proxy port as 9090 (`w8 = 0x2382` next to the CurrentProxyPort key) in the one defaults initialiser at 0xf34bc, which is why the POC's default is 9090.",
+      "evidence_ids": [
+        "ev_afd4a3ca28a30ea6abd00bc557cd69c1e9ba8128e5c9a500abdedf630c1d5fb5"
+      ],
+      "confidence": "observed"
+    },
+    {
+      "id": "fnd_2",
+      "statement": "The same initialiser writes `w8 = 0x1e` (30) for `composeTimeoutConfig`, so Compose's default send timeout is 30 seconds; the POC's 30 s default and 15/60/Off presets follow it.",
+      "evidence_ids": [
+        "ev_afd4a3ca28a30ea6abd00bc557cd69c1e9ba8128e5c9a500abdedf630c1d5fb5"
+      ],
+      "confidence": "observed"
+    },
+    {
+      "id": "fnd_3",
+      "statement": "Map Local's default response delay comes from its own small default function at 0x40c9c, which registers mapLocalResponseDelay = 10 (milliseconds), not seconds; the POC keeps the value in ms and applies the eight DelayTimePreset presets on top.",
+      "evidence_ids": [
+        "ev_0328e07ef02e5cf60aac74112354972d9e44e7ad5962a96d4a4c52954f513dc5"
+      ],
+      "confidence": "observed"
+    },
+    {
+      "id": "fnd_4",
+      "statement": "Map Local's delay menu is the Swift enum DelayTimePreset, whose contiguous cases are noDelay, oneSecond, twoSeconds, threeSeconds, fiveSeconds, tenSeconds, thirtySeconds and sixtySeconds, with a typed customDelayTimeMs field. The POC uses exactly that list and treats the last preset (60 000 ms) as the ceiling for typed values, replacing its earlier 10 s clamp.",
+      "evidence_ids": [
+        "ev_9df7b1f7b973910c11c1060b5464e883fa53bdccd3546a1186393211683dae9f"
+      ],
+      "confidence": "observed"
+    },
+    {
+      "id": "fnd_5",
+      "statement": "The original's BreakpointAbortOption cases are dropConnection, return503 and return429, in that order, and the defaults initialiser stores raw 0 for breakpointAbortOption — so a fresh install aborts a breakpoint by dropping the connection, not by answering 503.",
+      "evidence_ids": [
+        "ev_b24733559db5bd942a9400a2fe02b32634ebf945df93cf5be84fa633e5b20c9e",
+        "ev_afd4a3ca28a30ea6abd00bc557cd69c1e9ba8128e5c9a500abdedf630c1d5fb5"
+      ],
+      "confidence": "observed"
+    },
+    {
+      "id": "fnd_6",
+      "statement": "Compose's \"Automatically Follow Redirects\" switch is on by default: the getter at 0x43050 returns true for isComposeFollowRedirects, and the defaults initialiser 0xf34bc writes 1. The POC's Composer now starts with the switch on and passes -L to curl.",
+      "evidence_ids": [
+        "ev_1437b11e7c069b23d4bcfc6380dad980212ed7dab7095487cbf204148011edb4",
+        "ev_afd4a3ca28a30ea6abd00bc557cd69c1e9ba8128e5c9a500abdedf630c1d5fb5"
+      ],
+      "confidence": "observed"
+    },
+    {
+      "id": "fnd_7",
+      "statement": "The embedded request editor uses 2-space indentation: 0x42960 returns 2 for monacoEditorTabSize and the defaults initialiser writes the same 2. The POC's cURL/code pretty-printers now use that constant instead of four spaces.",
+      "evidence_ids": [
+        "ev_c729371ae82c0b22ec5b7157708a4cedbf227a46e2750112d05c813cca899531",
+        "ev_afd4a3ca28a30ea6abd00bc557cd69c1e9ba8128e5c9a500abdedf630c1d5fb5"
+      ],
+      "confidence": "observed"
+    },
+    {
+      "id": "fnd_8",
+      "statement": "Map Local's large-fixture warning is a real 20 MB comparison in function 0x1bb608, whose message is the string at 0xfb01b0: \"File size is bigger than 20Mb could impact the performance!\". The POC uses 20 * 1024 * 1024 bytes for the same check.",
+      "evidence_ids": [
+        "ev_de7dc34270e94812ca08acc6e71670569accb842b1dade5df1ca45af57b7466d"
+      ],
+      "confidence": "observed"
+    },
+    {
+      "id": "fnd_9",
+      "statement": "The original's cURL generator (0x2cd188) always appends --proxy http://localhost:<port>, sends inline bodies as --data-binary @- and file bodies as --data-binary \"@<path>\", adds the multipart Content-Type header itself and recomputes Content-Length. The POC's Copy as cURL now includes the live proxy by default and omits the stale Content-Length.",
+      "evidence_ids": [
+        "ev_8470c66a5f8a23933475c69e240f2ac4cbfd2eab5e58dfee0606458aa5ed0386",
+        "ev_afd4a3ca28a30ea6abd00bc557cd69c1e9ba8128e5c9a500abdedf630c1d5fb5"
+      ],
+      "confidence": "observed"
+    },
+    {
+      "id": "fnd_10",
+      "statement": "GraphQL matching reads the operation name from the graphQLQueryName body key (helper 0x4bdd4); the label builder at 0x28fe9c falls back to the literal <Missing Query Name> when it is absent. The POC keeps the same key and fallback text.",
+      "evidence_ids": [
+        "ev_44ec0d015f2ee7763bf15a4ed040009be065cf5283c77831a0fb02bdb4a7485e",
+        "ev_987de3070379b03ba4b46ea6d012b7a08d8ade10ea11f980094e5a3b87a9a9d6"
+      ],
+      "confidence": "observed"
+    },
+    {
+      "id": "fnd_11",
+      "statement": "Map Local's linked-fixture auto-save is on by default: 0x421cc returns true for isAutoSaveOnMapLocalFile. The POC is not claiming the original's 2-second debounce from code, only that the switch starts enabled.",
+      "evidence_ids": [
+        "ev_3bd7e9b4eb98baed0af3d331c158ce45441309ed68c2006c388d19f77ab4cb5c"
+      ],
+      "confidence": "observed"
+    }
+  ],
+  "handoff": "DONE: Proxzy is a complete Rust/egui POC for the requested Proxyman-style workflow. It has a real local HTTP/1.1 + HTTPS MITM gate on 127.0.0.1:9090 (9091-9093 fallback), live traffic list and inspector, copy URL/cURL/HTTPie/Postman/HAR/Markdown share, repeat, Composer for GraphQL and REST with cURL import and 15/30/60/Off timeout, Map Local with wildcard/GraphQL matching, three Success/Error/Empty scenarios, delay presets, linked fixture file, dynamic {{TOKEN}} injection and scenario switching, Breakpoints with request/response stages, editable method/URL/headers/body and Drop/503/429 abort modes, and a Log Dashboard with KPI cards, traffic chart, status families, top hosts, filters and session summary.\n\nTHIS PASS: decompiled the per-key getters in ProxymanCore and wired their values into the build. NEW EVIDENCE + FINDINGS fnd_6..fnd_11: compose follow-redirects defaults true (0x43050 + 0xf34bc); editor tab size 2 (0x42960); 20 MB fixture warning is a real compare with the string \"File size is bigger than 20Mb could impact the performance!\" at 0xfb01b0 from 0x1bb608; cURL builder 0x2cd188 always appends --proxy http://localhost:<port>, uses --data-binary @- / @file, adds multipart Content-Type and recomputes Content-Length; GraphQL key graphQLQueryName (0x4bdd4) with <Missing Query Name> fallback (0x28fe9c); Map Local auto-save default true (0x421cc). fnd_3/fnd_4 corrected: the preset list IS settled and 60 s is now the typed-delay ceiling. Code changes: app/src/model.rs constants + curl_with_proxy + 2-space indentation + AbortMode::default derived from BREAKPOINT_ABORT_OPTION_DEFAULT; app/src/app.rs composer_follow_redirects and run_curl(-L) and live proxy port in inspector; app/src/views.rs Follow chip and share-sheet cURL; app/src/proxy.rs delay default 10 ms and ceiling 60 s; app/src/rules_ui.rs 20 MB threshold; app/src/studio_ui.rs run_curl call.\n\nVERIFIED this pass: cargo build clean (no warnings); 92 tests pass; --screenshot writes app/shots/verify-mechanics.png (2880x1664, 1.55 MB, non-blank with the Follow chip visible); rebuild_check reports build passed, app-screenshot passed, mechanics 29/29 sourced, 0 estimated, and \"This would pass.\"\n\nTRAPS: views.rs, rules_ui.rs, studio_ui.rs, tour_ui.rs, acp.rs and acp_ui.rs are include!d from app.rs; never add mod declarations. Only edit app/. Never run the GUI interactively or networksetup. Use ./app/target/debug/proxzy --screenshot app/shots/<name>.png from the repo root. The decompiler fell back to the built-in lifter (deep_engine_unavailable), so register-level pseudo-C is inferred, not exact; all cited values are single constants confirmed by a matching getter.\n\nUNKNOWNS left open: exact original pixel layout/colours (unk_47215454465baff4); Local Directory tree mapping (unk_7ff0c3d300872480); live response-stage breakpoint pause is still simulated; regex matching and gist publishing are not implemented; exact GraphQL panel arrangement (unk_22889b3d43a9fb64). Documented, not silently omitted. NEXT: if asked, implement Proxyman's Local Directory mapping or a live response-stage pause.",
+  "updated": "2026-11-18T09:39:13Z"
 }

@@ -14,6 +14,7 @@ use crate::model::{
     auto_derive_empty_scenario, detect_kind, extract_domain_from_pattern, graphql_info,
     make_environment_wildcard_pattern, now_stamp, sanitize_mock_payload, ApiKind, BreakpointRule,
     Capture, MapRule, MockScenario, RuleMethod, SessionCallAudit, TestSession,
+    DEFAULT_MAP_LOCAL_DELAY_MS, MAP_LOCAL_MAX_DELAY_MS,
 };
 use flate2::read::GzDecoder;
 use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
@@ -134,7 +135,11 @@ pub enum BpDecision {
         headers: String,
         body: String,
     },
-    Abort,
+    /// Abort the paused call. `mode` is the original's "Abort by" choice:
+    /// drop the socket, answer 503, or answer 429.
+    Abort {
+        mode: crate::model::AbortMode,
+    },
 }
 
 pub enum ProxyEvent {
@@ -1029,14 +1034,26 @@ where
             p.retain(|x| x.id != id);
         }
         match decision {
-            Some(BpDecision::Abort) => {
-                let resp = make_response(
-                    403,
-                    "Forbidden",
-                    vec![("content-type".into(), "application/json".into())],
-                    br#"{"error":"Request blocked by Proxzy breakpoint"}"#.to_vec(),
-                );
-                write_response(client, &resp, false).await?;
+            Some(BpDecision::Abort { mode }) => {
+                match mode.status() {
+                    Some(code) => {
+                        let body = format!(
+                            "{{\"error\":\"Request aborted by Proxzy breakpoint\",\"status\":{}}}",
+                            code
+                        );
+                        let resp = make_response(
+                            code,
+                            mode.reason(),
+                            vec![("content-type".into(), "application/json".into())],
+                            body.into_bytes(),
+                        );
+                        write_response(client, &resp, false).await?;
+                    }
+                    None => {
+                        // Drop Connection: close the socket with no HTTP reply.
+                        let _ = client.shutdown().await;
+                    }
+                }
                 aborted = true;
             }
             Some(BpDecision::Continue {
@@ -1066,7 +1083,10 @@ where
     // 2) Map Local answers matching live requests without touching the network.
     if !aborted {
         if let Some(rule) = matching_map_rule(&ctx, &request, &url) {
-            let delay = rule.delay_ms.min(10_000);
+            // The original's DelayTimePreset goes up to sixtySeconds
+            // (ProxymanCore 0x10aa211), so a 30 s or 60 s preset must not be
+            // silently cut down to ten seconds.
+            let delay = rule.delay_ms.min(MAP_LOCAL_MAX_DELAY_MS);
             if delay > 0 {
                 tokio::time::sleep(Duration::from_millis(delay)).await;
             }
@@ -2424,7 +2444,7 @@ fn handle_proxzy_control(req: &HttpRequest, control_path: &str, ctx: &ConnCtx) -
                     inject_props: inject_map,
                     app_version: app_version.clone(),
                     env: env.clone(),
-                    delay_ms: delay_ms_opt.unwrap_or(20),
+                    delay_ms: delay_ms_opt.unwrap_or(DEFAULT_MAP_LOCAL_DELAY_MS),
                     ..MapRule::default()
                 };
                 apply_slots(&mut rule);

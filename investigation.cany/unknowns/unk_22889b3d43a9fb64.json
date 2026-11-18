@@ -1,6 +1,6 @@
 {
   "id": "unk_22889b3d43a9fb64",
-  "revision": 3,
+  "revision": 4,
   "question": "How does the original present GraphQL operations and breakpoint editing in detail?",
   "severity": "low",
   "domain": "behaviour",
@@ -11,5 +11,5 @@
   ],
   "evidence_for": [],
   "evidence_against": [],
-  "resolution": "Blocked by the clean-room rule: no picture of GraphQL selection or a paused breakpoint exists in the workspace, and the original cannot be opened. The POC therefore defines its own presentation from the request text: GraphQL requests show operation name/type and variables, and the breakpoint modal edits method, URL, headers and request or response body with Continue/Abort. Exact wording and arrangement in the original remain unknown; this does not affect behaviour."
+  "resolution": "Partly settled in deep mode. The original's English BreakpointController table names the editor fields and actions: editable URL (with an Edit URL sheet), method buttons, Status Code, the Continue ⌘. / Execute ⌘⏎ / Abort ⌘\\ shortcuts, Abort by with Drop Connection / 503 / 429, Execute All and Continue All, and an \"Auto Bring this Window to the Front\" option. What is still unknown is the exact visual arrangement and the GraphQL operation panel: no capture of either exists in the workspace, so the POC keeps its own arrangement (method, URL, headers and body fields with the same shortcuts) and derives GraphQL operation name/type/variables from the request text. This does not affect behaviour."
 }

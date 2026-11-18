@@ -158,10 +158,28 @@ impl Capture {
         }
     }
 
+    /// Convenience form for callers that do not know the live port; the app
+    /// itself always passes `self.proxy_port` through `curl_with_proxy`.
+    #[allow(dead_code)]
     pub fn curl(&self) -> String {
+        self.curl_with_proxy(Some(DEFAULT_PROXY_PORT))
+    }
+
+    /// The original's cURL generator (`sub_2cd188`) appends
+    /// `--proxy http://localhost:<port>` whenever `IncludeHTTPProxyCURL` is on,
+    /// and that key defaults to true in the defaults initialiser at `0xf34bc`
+    /// (`w8 = 1`, offset `0x78`). Pass `None` to copy a plain command instead.
+    pub fn curl_with_proxy(&self, proxy_port: Option<u16>) -> String {
         let mut out = format!("curl -X {} '{}'", self.method, self.url);
         for (k, v) in &self.req_headers {
+            // cURL refuses a stale Content-Length once it re-encodes the body.
+            if k.eq_ignore_ascii_case("content-length") {
+                continue;
+            }
             out.push_str(&format!(" \\\n  -H '{}: {}'", k, v.replace('\'', "'\\''")));
+        }
+        if let Some(port) = proxy_port {
+            out.push_str(&format!(" \\\n  --proxy http://localhost:{port}"));
         }
         if !self.req_body.is_empty() {
             out.push_str(&format!(
@@ -175,6 +193,104 @@ impl Capture {
     pub fn share_link(&self) -> String {
         format!("proxzy://share/req_{:x}", self.id)
     }
+
+    /// The HTTPie form of the same request (the original's copy menu offers it
+    /// next to cURL).
+    pub fn httpie(&self) -> String {
+        let mut out = format!("http {} '{}'", self.method, self.url);
+        for (k, v) in &self.req_headers {
+            out.push_str(&format!(
+                " \\\n  '{}: {}'",
+                k,
+                v.replace('\'', "'\\''")
+            ));
+        }
+        if !self.req_body.is_empty() {
+            out.push_str(&format!(
+                " \\\n  --raw '{}'",
+                self.req_body.replace('\'', "'\\''")
+            ));
+        }
+        out
+    }
+
+    /// Postman Collection v2.1 around this one request.
+    pub fn postman_collection(&self) -> String {
+        let mut headers = Vec::new();
+        for (k, v) in &self.req_headers {
+            headers.push(format!(
+                "{{\"key\":\"{}\",\"value\":\"{}\",\"type\":\"text\"}}",
+                json_escape(k),
+                json_escape(v)
+            ));
+        }
+        let body = if self.req_body.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ",\"body\":{{\"mode\":\"raw\",\"raw\":\"{}\",\"options\":{{\"raw\":{{\"language\":\"json\"}}}}}}",
+                json_escape(&self.req_body)
+            )
+        };
+        format!(
+            "{{\n  \"info\": {{\n    \"name\": \"Proxzy capture {id}\",\n    \"schema\": \"https://schema.getpostman.com/json/collection/v2.1.0/collection.json\"\n  }},\n  \"item\": [\n    {{\n      \"name\": \"{method} {host}\",\n      \"request\": {{\n        \"method\": \"{method}\",\n        \"header\": [{headers}],\n        \"url\": {{ \"raw\": \"{url}\" }}{body}\n      }}\n    }}\n  ]\n}}",
+            id = self.id,
+            method = json_escape(&self.method),
+            host = json_escape(&self.host_path()),
+            headers = headers.join(","),
+            url = json_escape(&self.url),
+            body = body
+        )
+    }
+
+    /// One-entry HAR 1.2 document for the same call.
+    pub fn har(&self) -> String {
+        let mut headers = Vec::new();
+        for (k, v) in &self.req_headers {
+            headers.push(format!(
+                "{{\"name\":\"{}\",\"value\":\"{}\"}}",
+                json_escape(k),
+                json_escape(v)
+            ));
+        }
+        let post = if self.req_body.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ",\"postData\":{{\"mimeType\":\"application/json\",\"text\":\"{}\"}}",
+                json_escape(&self.req_body)
+            )
+        };
+        format!(
+            "{{\n  \"log\": {{\n    \"version\": \"1.2\",\n    \"creator\": {{\"name\": \"Proxzy\", \"version\": \"1.0\"}},\n    \"entries\": [\n      {{\n        \"startedDateTime\": \"{started}\",\n        \"time\": {latency},\n        \"request\": {{\n          \"method\": \"{method}\",\n          \"url\": \"{url}\",\n          \"headers\": [{headers}]{post}\n        }},\n        \"response\": {{\n          \"status\": {status},\n          \"content\": {{\"size\": {size}, \"text\": \"{resp}\"}}\n        }}\n      }}\n    ]\n  }}\n}}",
+            started = json_escape(&self.started),
+            latency = self.latency_ms,
+            method = json_escape(&self.method),
+            url = json_escape(&self.url),
+            headers = headers.join(","),
+            post = post,
+            status = self.status,
+            size = self.size_bytes,
+            resp = json_escape(&self.resp_body)
+        )
+    }
+}
+
+/// Minimal JSON string escaping for the generated Postman and HAR documents.
+fn json_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 8);
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -542,7 +658,9 @@ pub fn pretty_print(body: &str) -> String {
                 out.push(ch);
                 out.push('\n');
                 for _ in 0..indent {
-                    out.push_str("  ");
+                    for _ in 0..MONACO_EDITOR_TAB_SIZE {
+                        out.push(' ');
+                    }
                 }
             }
             ':' => {
@@ -718,7 +836,9 @@ fn push_indented_line(out: &mut String, indent: usize) {
         out.push('\n');
     }
     for _ in 0..indent {
-        out.push_str("  ");
+        for _ in 0..MONACO_EDITOR_TAB_SIZE {
+            out.push(' ');
+        }
     }
 }
 
@@ -1930,7 +2050,8 @@ impl Default for MapRule {
             method: RuleMethod::Any,
             status: 200,
             content_type: "application/json".into(),
-            delay_ms: 20,
+            // `mapLocalResponseDelay = 10` in the original's defaults (0x40c9c).
+            delay_ms: DEFAULT_MAP_LOCAL_DELAY_MS,
             body: success_body.clone(),
             local_file: String::new(),
             graphql_name: String::new(),
@@ -2492,6 +2613,126 @@ impl BpStage {
     }
 }
 
+/// What happens when a paused breakpoint is aborted. This mirrors the
+/// original's "Abort by" menu: drop the socket, answer 503, or answer 429.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AbortMode {
+    DropConnection,
+    ServiceUnavailable,
+    TooManyRequests,
+}
+
+impl Default for AbortMode {
+    /// The original writes raw `0` for `breakpointAbortOption`, and its three
+    /// cases are declared in the order dropConnection, return503, return429 —
+    /// so a fresh install aborts by dropping the socket.
+    fn default() -> Self {
+        AbortMode::ALL
+            .get(BREAKPOINT_ABORT_OPTION_DEFAULT as usize)
+            .copied()
+            .unwrap_or(AbortMode::DropConnection)
+    }
+}
+
+impl AbortMode {
+    pub const ALL: [AbortMode; 3] = [
+        AbortMode::DropConnection,
+        AbortMode::ServiceUnavailable,
+        AbortMode::TooManyRequests,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AbortMode::DropConnection => "Drop Connection",
+            AbortMode::ServiceUnavailable => "503 Service Unavailable",
+            AbortMode::TooManyRequests => "429 Too Many Requests",
+        }
+    }
+
+    pub fn short_label(self) -> &'static str {
+        match self {
+            AbortMode::DropConnection => "Drop",
+            AbortMode::ServiceUnavailable => "503",
+            AbortMode::TooManyRequests => "429",
+        }
+    }
+
+    /// `None` means close the connection without writing an HTTP response.
+    pub fn status(self) -> Option<u16> {
+        match self {
+            AbortMode::DropConnection => None,
+            AbortMode::ServiceUnavailable => Some(503),
+            AbortMode::TooManyRequests => Some(429),
+        }
+    }
+
+    pub fn reason(self) -> &'static str {
+        match self {
+            AbortMode::DropConnection => "",
+            AbortMode::ServiceUnavailable => "Service Unavailable",
+            AbortMode::TooManyRequests => "Too Many Requests",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Values read out of ProxymanCore (Deep mode, built-in lifter).
+//
+// Each constant names the function in the original that settles it. The
+// functions live in `Contents/Frameworks/ProxymanCore.framework/ProxymanCore`
+// (`Proxyman` sha256 817924b6…). Keep these in one place so the UI, the proxy
+// and the tests read the same numbers the original registers.
+// ---------------------------------------------------------------------------
+
+/// `CurrentProxyPort` in the one defaults initialiser: `w8 = 0x2382` at
+/// `0xf34bc` (label `f5a38`). 0x2382 = 9090.
+pub const DEFAULT_PROXY_PORT: u16 = 9090;
+
+/// `composeTimeoutConfig` in the same initialiser: `w8 = 0x1e` (30) and the
+/// getter at `0x42f8c` repeats it. Unit is seconds.
+pub const DEFAULT_COMPOSE_TIMEOUT_SECS: u64 = 30;
+
+/// `mapLocalResponseDelay` is registered as `w8 = 10` in the small default
+/// function at `0x40c9c`. Unit is milliseconds, not seconds.
+pub const DEFAULT_MAP_LOCAL_DELAY_MS: u64 = 10;
+
+/// The largest built-in `DelayTimePreset` case, `sixtySeconds`
+/// (`__swift5_reflstr` at `0x10aa211`). A mock must be allowed to wait this
+/// long; clamping at ten seconds silently broke the 30 s and 60 s presets.
+pub const MAP_LOCAL_MAX_DELAY_MS: u64 = 60_000;
+
+/// `monacoEditorTabSize` defaults to 2 (`0x42960`, `w8 = 2`), so a JSON body
+/// is re-indented with two spaces.
+pub const MONACO_EDITOR_TAB_SIZE: usize = 2;
+
+/// The Map Local editor warns above 20 MB: `sub_1bb608` loads the string
+/// "File size is bigger than 20Mb could impact the performance!" at
+/// `0xfb01b0`.
+pub const MAP_LOCAL_LARGE_FILE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// `isComposeFollowRedirects` defaults to true (`0x43050`, `w8 = 1`).
+pub const COMPOSE_FOLLOW_REDIRECTS_DEFAULT: bool = true;
+
+/// `breakpointAbortOption` defaults to raw 0. `sub_42858` stores zero and the
+/// `BreakpointAbortOption` order is dropConnection, return503, return429, so a
+/// fresh install drops the connection.
+pub const BREAKPOINT_ABORT_OPTION_DEFAULT: u8 = 0;
+
+/// The delay menu of the original's Map Local editor. The Swift enum
+/// `DelayTimePreset` in `ProxymanCore` declares exactly these cases
+/// (`noDelay`, `oneSecond`, … `sixtySeconds`) next to a `customDelayTimeMs`
+/// field, so the preset list is evidence, not guesswork.
+pub const DELAY_PRESETS_MS: [(u64, &str); 8] = [
+    (0, "No delay"),
+    (1_000, "1 s"),
+    (2_000, "2 s"),
+    (3_000, "3 s"),
+    (5_000, "5 s"),
+    (10_000, "10 s"),
+    (30_000, "30 s"),
+    (60_000, "60 s"),
+];
+
 #[derive(Clone)]
 pub struct BreakpointRule {
     pub id: u64,
@@ -2621,6 +2862,109 @@ pub fn sample_logs() -> Vec<LogEntry> {
 #[cfg(test)]
 mod rule_tests {
     use super::*;
+
+    #[test]
+    fn abort_modes_match_the_original_menu() {
+        assert_eq!(AbortMode::default(), AbortMode::DropConnection);
+        assert_eq!(AbortMode::ServiceUnavailable.status(), Some(503));
+        assert_eq!(AbortMode::TooManyRequests.status(), Some(429));
+        assert_eq!(AbortMode::DropConnection.status(), None);
+        assert_eq!(AbortMode::ServiceUnavailable.reason(), "Service Unavailable");
+        assert_eq!(AbortMode::ALL.len(), 3);
+    }
+
+    #[test]
+    fn delay_presets_follow_the_decompiled_enum() {
+        // DelayTimePreset in ProxymanCore: noDelay, oneSecond, twoSeconds,
+        // threeSeconds, fiveSeconds, tenSeconds, thirtySeconds, sixtySeconds.
+        assert_eq!(DELAY_PRESETS_MS.len(), 8);
+        assert_eq!(DELAY_PRESETS_MS[0], (0, "No delay"));
+        assert!(DELAY_PRESETS_MS.windows(2).all(|w| w[0].0 < w[1].0));
+        assert_eq!(DELAY_PRESETS_MS[7].0, 60_000);
+        assert_eq!(DELAY_PRESETS_MS[7].0, MAP_LOCAL_MAX_DELAY_MS);
+    }
+
+    #[test]
+    fn defaults_come_from_the_decompiled_initialiser() {
+        // ProxymanCore 0xf34bc / 0x40c9c / 0x42f8c / 0x43050 / 0x42960.
+        assert_eq!(DEFAULT_PROXY_PORT, 9090); // 0x2382
+        assert_eq!(DEFAULT_COMPOSE_TIMEOUT_SECS, 30); // 0x1e
+        assert_eq!(DEFAULT_MAP_LOCAL_DELAY_MS, MapRule::default().delay_ms);
+        assert!(COMPOSE_FOLLOW_REDIRECTS_DEFAULT);
+        assert_eq!(BREAKPOINT_ABORT_OPTION_DEFAULT, 0);
+        assert_eq!(MONACO_EDITOR_TAB_SIZE, 2);
+        assert_eq!(MAP_LOCAL_LARGE_FILE_BYTES, 20 * 1024 * 1024);
+    }
+
+    #[test]
+    fn curl_copy_includes_the_local_proxy_and_drops_content_length() {
+        let capture = Capture {
+            id: 1,
+            method: "POST".into(),
+            url: "https://api.example.com/v1/cart".into(),
+            status: 200,
+            latency_ms: 1,
+            started: "12:00:00".into(),
+            remote: "api.example.com:443".into(),
+            protocol: "HTTP/2".into(),
+            size_bytes: 2,
+            kind: ApiKind::Rest,
+            req_headers: vec![
+                ("Content-Length".into(), "42".into()),
+                ("Accept".into(), "application/json".into()),
+            ],
+            req_body: "{}".into(),
+            resp_headers: vec![],
+            resp_body: String::new(),
+            graphql: None,
+            mock: None,
+            pinned: false,
+            aborted: false,
+        };
+        // IncludeHTTPProxyCURL defaults to 1 in ProxymanCore 0xf34bc, so the
+        // copied command points at the local proxy.
+        let with_proxy = capture.curl_with_proxy(Some(9090));
+        assert!(with_proxy.contains("--proxy http://localhost:9090"));
+        assert!(!with_proxy.to_lowercase().contains("-h 'content-length"));
+        assert!(capture.curl_with_proxy(None).find("--proxy").is_none());
+    }
+
+    #[test]
+    fn copy_formats_describe_the_same_request() {
+        let capture = Capture {
+            id: 42,
+            method: "POST".into(),
+            url: "https://api.example.com/v1/login".into(),
+            status: 200,
+            latency_ms: 12,
+            size_bytes: 64,
+            kind: ApiKind::Rest,
+            started: "10:00:00".into(),
+            remote: "api.example.com".into(),
+            protocol: "HTTP/1.1".into(),
+            req_headers: vec![("content-type".into(), "application/json".into())],
+            req_body: "{\"phone\":\"0812345678\"}".into(),
+            resp_headers: vec![],
+            resp_body: "{\"ok\":true}".into(),
+            graphql: None,
+            mock: None,
+            pinned: false,
+            aborted: false,
+        };
+        let httpie = capture.httpie();
+        assert!(httpie.starts_with("http POST 'https://api.example.com/v1/login'"));
+        assert!(httpie.contains("content-type: application/json"));
+
+        let postman = capture.postman_collection();
+        assert!(postman.contains("\"schema\": \"https://schema.getpostman.com"));
+        assert!(postman.contains("\"raw\": \"https://api.example.com/v1/login\""));
+        assert!(postman.contains("\\\"phone\\\""));
+
+        let har = capture.har();
+        assert!(har.contains("\"version\": \"1.2\""));
+        assert!(har.contains("\"status\": 200"));
+        assert!(har.contains("\\\"ok\\\":true"));
+    }
 
     #[test]
     fn wildcard_matches_query_strings() {

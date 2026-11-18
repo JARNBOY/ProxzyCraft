@@ -1,0 +1,186 @@
+{
+  "version": 1,
+  "values": [
+    {
+      "name": "proxy port",
+      "group": "proxy",
+      "value": 9090,
+      "unit": "port",
+      "source": "defaults initialiser 0xf34bc, CurrentProxyPort = 0x2382"
+    },
+    {
+      "name": "map local default delay",
+      "group": "map local",
+      "value": 10,
+      "unit": "ms",
+      "source": "delay default function 0x40c9c, mapLocalResponseDelay = 10"
+    },
+    {
+      "name": "map local delay presets",
+      "group": "map local",
+      "value": "No delay, 1 s, 2 s, 3 s, 5 s, 10 s, 30 s, 60 s",
+      "source": "DelayTimePreset case list in the ProxymanCore Swift reflection string table at 0x10aa192"
+    },
+    {
+      "name": "map local rule order",
+      "group": "map local",
+      "value": "top to bottom, first match wins",
+      "source": "MapLocalViewController.strings"
+    },
+    {
+      "name": "map local fixture warning",
+      "group": "map local",
+      "value": 20,
+      "unit": "MB",
+      "source": "function 0x1bb608 (compares against 20 MB, string at 0xfb01b0); EditMapLocalViewController.strings"
+    },
+    {
+      "name": "map local fixture auto-save",
+      "group": "map local",
+      "value": 2,
+      "unit": "s",
+      "source": "EditMapLocalViewController.strings; switch defaults on per 0x421cc"
+    },
+    {
+      "name": "map local targets",
+      "group": "map local",
+      "value": "Local Directory, Local File, HTTP/1.x message",
+      "source": "HelpMapLocalViewController.strings"
+    },
+    {
+      "name": "map local missing file fallback",
+      "group": "map local",
+      "value": "serve from upstream",
+      "source": "HelpMapLocalViewController.strings"
+    },
+    {
+      "name": "map local graphql name filter",
+      "group": "map local",
+      "value": true,
+      "source": "MatchingRuleView.strings, GraphQL QueryName"
+    },
+    {
+      "name": "wildcard characters",
+      "group": "matching",
+      "value": "* and ?",
+      "source": "MatchingRuleView.strings, Use Wildcard"
+    },
+    {
+      "name": "regex mode",
+      "group": "matching",
+      "value": "full-matching regex",
+      "source": "MatchingRuleView.strings, Use Regex"
+    },
+    {
+      "name": "breakpoint rule order",
+      "group": "breakpoints",
+      "value": "top to bottom, first match wins",
+      "source": "BreakpointListController.strings"
+    },
+    {
+      "name": "breakpoint abort options",
+      "group": "breakpoints",
+      "value": "Drop Connection, 503 Service Unavailable, 429 Too Many Requests",
+      "source": "BreakpointController.strings"
+    },
+    {
+      "name": "breakpoint default abort mode",
+      "group": "breakpoints",
+      "value": "Drop Connection",
+      "source": "defaults initialiser 0xf34bc writes raw 0 for breakpointAbortOption; BreakpointAbortOption cases are dropConnection, return503, return429 in that order"
+    },
+    {
+      "name": "breakpoint continue shortcut",
+      "group": "breakpoints",
+      "value": "Cmd+.",
+      "source": "BreakpointController.strings"
+    },
+    {
+      "name": "breakpoint execute shortcut",
+      "group": "breakpoints",
+      "value": "Cmd+Enter",
+      "source": "BreakpointController.strings"
+    },
+    {
+      "name": "breakpoint abort shortcut",
+      "group": "breakpoints",
+      "value": "Cmd+\\",
+      "source": "BreakpointController.strings"
+    },
+    {
+      "name": "compose default timeout",
+      "group": "compose",
+      "value": 30,
+      "unit": "s",
+      "source": "defaults initialiser 0xf34bc, composeTimeoutConfig = 0x1e; getter 0x42f8c returns 30"
+    },
+    {
+      "name": "compose follow redirects default",
+      "group": "compose",
+      "value": true,
+      "source": "getter 0x43050 returns true for isComposeFollowRedirects; defaults initialiser 0xf34bc writes 1"
+    },
+    {
+      "name": "compose editor tab size",
+      "group": "compose",
+      "value": 2,
+      "unit": "spaces",
+      "source": "getter 0x42960 returns 2 for monacoEditorTabSize; defaults initialiser 0xf34bc"
+    },
+    {
+      "name": "map local delay ceiling",
+      "group": "map local",
+      "value": 60,
+      "unit": "s",
+      "source": "DelayTimePreset sixtySeconds case at 0x10aa211 is the last preset"
+    },
+    {
+      "name": "map local fixture warning function",
+      "group": "map local",
+      "value": "File size is bigger than 20Mb could impact the performance!",
+      "source": "function 0x1bb608 compares against 20 MB and loads the string at 0xfb01b0"
+    },
+    {
+      "name": "map local auto-save enabled",
+      "group": "map local",
+      "value": true,
+      "source": "getter 0x421cc returns true for isAutoSaveOnMapLocalFile"
+    },
+    {
+      "name": "curl proxy prefix",
+      "group": "copy and share",
+      "value": "--proxy http://localhost:<proxy port>",
+      "source": "function 0x2cd188 appends the live proxy to every generated cURL; defaults initialiser 0xf34bc sets IncludeHTTPProxyCURL = 1"
+    },
+    {
+      "name": "graphql missing name fallback",
+      "group": "matching",
+      "value": "<Missing Query Name>",
+      "source": "label builder 0x28fe9c; the body key read by 0x4bdd4 is graphQLQueryName"
+    },
+    {
+      "name": "compose timeout presets",
+      "group": "compose",
+      "value": "15 s, 30 s, 60 s, no timeout",
+      "source": "Compose.strings"
+    },
+    {
+      "name": "compose send shortcut",
+      "group": "compose",
+      "value": "Cmd+Enter",
+      "source": "Compose.strings, SEND"
+    },
+    {
+      "name": "copy formats",
+      "group": "copy and share",
+      "value": "cURL, HTTPie, HAR, Postman Collection 2, Python, Node, Go, Java, Dart, Swift, Objective-C, jQuery",
+      "source": "CodeGeneratorViewController.strings"
+    },
+    {
+      "name": "main menu copy as cURL",
+      "group": "copy and share",
+      "value": true,
+      "source": "Main.strings, Copy as cURL"
+    }
+  ]
+}

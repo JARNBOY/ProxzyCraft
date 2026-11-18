@@ -91,11 +91,11 @@ Combine the two to capture a page with its modal, for example
 | Live Capture | Real proxy on `127.0.0.1:9090` (falls back to 9091–9093) with HTTP and HTTPS interception | Open Live Capture, press Start proxy, then point a device at it. **Run check** sends one real request through the gate and reads which Mac route a simulator would inherit |
 | Traffic | Captured calls with method, status, type, time and size; live rows are badged `LIVE` | Click a row to pin it; use the sidebar filters or the search box. `Tunnels` shows raw and protected connections. `Follow live` jumps back to the newest call |
 | Inspector | Overview, Request, Response, Headers and cURL | Select a call, then switch tabs on the right. Response bodies switch between JSON (default), Raw, XML and HTML |
-| Copy & share | URL, full cURL, a local share link and Markdown | Buttons under the URL, or the cURL tab |
+| Copy & share | URL, full cURL, a local share link and Markdown, plus an exchange tab for HTTPie, Postman Collection 2.1 and HAR 1.2 | Buttons under the URL, or the cURL tab |
 | Repeat | Replays the selected call into a new capture (live HTTPS replays trust the local CA) | Select a call and press Repeat |
-| Composer | Writes and sends GraphQL or REST requests | Pick a preset or edit method, URL, headers and body, then Send. Its response panel shares the same JSON (default), Raw, XML and HTML switch |
-| Map Local | Answers matching live or Composer requests with local JSON, status and delay; a rule can also link a fixture file on disk and read it on every request | Add a rule, switch it on, optionally browse to or paste a local file path, use Send test or the Composer |
-| Breakpoints | Pauses a real live request and lets you edit, continue or abort it | Arm a rule, send traffic through the proxy, edit, Continue or Abort |
+| Composer | Writes and sends GraphQL or REST requests, with a send timeout of 15 s / 30 s (default) / 60 s or Off | Pick a preset or edit method, URL, headers and body, then Send. Its response panel shares the same JSON (default), Raw, XML and HTML switch |
+| Map Local | Answers matching live or Composer requests with local JSON, status and delay; a rule can also link a fixture file on disk and read it on every request | Add a rule, switch it on, optionally browse to or paste a local file path, pick a delay preset, use Send test or the Composer |
+| Breakpoints | Pauses a real live request and lets you edit, continue or abort it; abort can drop the socket (default), answer 503 or answer 429 | Arm a rule, send traffic through the proxy, edit, then Continue or pick an **Abort by** mode |
 | Log Dashboard | One timeline for captures, mocks, breakpoints and system events | Open it from Monitor in the rail, the Logs chip in the top bar, or All features; filter by Info / Warn / Error and copy the session summary |
 | Agent Control | A loopback control plane an external agent or IDE can drive, plus Map Local scenario switches and body injection | Open Agent Control, copy a brief under **Hook an IDE**, then let the agent call `/__proxzy/health` and `/__proxzy/scenario` |
 | ACP Bridge | A concept lab for the editor ↔ agent side of an AI coding setup: ACP v1 handshake, streamed updates and a permission gate | Open ACP Bridge, step through the session, then choose Allow once, Always allow or Reject |
@@ -239,6 +239,15 @@ only owns the HTTP request that can be mocked, inspected or replayed.
   not advertised through the proxy.
 - **All access:** every control that exists is usable. Nothing is locked behind
   an account or trial.
+
+## Where the defaults come from
+
+`MECHANICS.md` is the settings sheet: every default this app ships (9,090 proxy
+port, 30 s compose timeout, 10 ms Map Local delay, 20 MB fixture warning, the
+"Abort by" menu, copy formats, shortcut keys) with the original resource or
+function it was read from, and a short list of the values that are estimates
+because the original computes them at runtime. `mechanics.json` holds the same
+numbers in a machine-readable form.
 
 ## Stack
 
